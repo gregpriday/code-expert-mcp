@@ -1,7 +1,8 @@
 // Package config resolves CodeExpert configuration from built-in defaults, user
 // and project TOML files, environment variables, and CLI/MCP arguments, in that
-// precedence order. Secrets are never stored in the config struct; only the name
-// of the environment variable holding a key is configured.
+// precedence order. Secrets are never serialized: the config records only the
+// name of the environment variable holding a key, and the resolved value lives
+// in runtime-only fields (see APIKey/AuthToken).
 package config
 
 // SupportedVersion is the newest config schema version this build understands.
@@ -200,6 +201,8 @@ type EmbeddingsConfig struct {
 	ChunkTokens   int    `toml:"chunk_tokens"`
 	OverlapTokens int    `toml:"overlap_tokens"`
 	MaxChunks     int    `toml:"max_chunks"`
+	// APIKey is resolved at load time from APIKeyEnv and never serialized.
+	APIKey string `toml:"-"`
 }
 
 // CacheConfig controls the content-addressed cache.

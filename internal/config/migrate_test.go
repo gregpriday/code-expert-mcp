@@ -343,6 +343,99 @@ large_model = "fugu-ultra"
 	}
 }
 
+// TestEmbeddingsSecretsNeverSerialized proves the separate embeddings API key is
+// resolved from its env var and that the redacted String() view exposes only its
+// presence and env-var name — never the secret value.
+func TestEmbeddingsSecretsNeverSerialized(t *testing.T) {
+	t.Setenv("EMBEDDINGS_API_KEY", "sk-embed-secret-value-5678")
+	cfg, err := LoadFile(writeTOML(t, `
+version = 2
+[provider]
+active = "sakana"
+[providers.sakana]
+api = "responses"
+base_url = "https://api.sakana.ai/v1"
+small_model = "fugu"
+large_model = "fugu-ultra"
+[embeddings]
+enabled = true
+provider = "openai-compatible"
+model = "text-embedding-3-small"
+api_key_env = "EMBEDDINGS_API_KEY"
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Embeddings.APIKey != "sk-embed-secret-value-5678" {
+		t.Fatalf("embeddings key not resolved from env: got %q", cfg.Embeddings.APIKey)
+	}
+	out := cfg.String()
+	if strings.Contains(out, "sk-embed-secret-value-5678") {
+		t.Errorf("String() leaked the embeddings API key:\n%s", out)
+	}
+	if !strings.Contains(out, "EMBEDDINGS_API_KEY") {
+		t.Errorf("String() should reference the embeddings env-var name")
+	}
+	// Scope the presence check to the [embeddings] block; the [provider] block
+	// also emits api_key_present and must not satisfy this assertion.
+	idx := strings.Index(out, "[embeddings]")
+	if idx < 0 {
+		t.Fatalf("String() missing [embeddings] block:\n%s", out)
+	}
+	if !strings.Contains(out[idx:], "api_key_present = true") {
+		t.Errorf("[embeddings] block should report the key as present:\n%s", out)
+	}
+}
+
+// TestEmbeddingsAPIKeyEnvOverride proves CODEEXPERT_EMBEDDINGS_API_KEY_ENV
+// overrides the file-configured env-var name before secret resolution, so the
+// override's value wins over the file value — mirroring the provider override.
+func TestEmbeddingsAPIKeyEnvOverride(t *testing.T) {
+	t.Setenv("CODEEXPERT_EMBEDDINGS_API_KEY_ENV", "OVERRIDE_EMBEDDINGS_KEY")
+	t.Setenv("OVERRIDE_EMBEDDINGS_KEY", "sk-embed-from-override")
+	t.Setenv("FILE_EMBEDDINGS_KEY", "sk-embed-from-file")
+	cfg, err := LoadFile(writeTOML(t, `
+version = 2
+[provider]
+active = "sakana"
+[providers.sakana]
+api = "responses"
+base_url = "https://api.sakana.ai/v1"
+small_model = "fugu"
+large_model = "fugu-ultra"
+[embeddings]
+enabled = true
+provider = "openai-compatible"
+model = "text-embedding-3-small"
+api_key_env = "FILE_EMBEDDINGS_KEY"
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Embeddings.APIKeyEnv != "OVERRIDE_EMBEDDINGS_KEY" {
+		t.Fatalf("override did not beat the file api_key_env: got %q", cfg.Embeddings.APIKeyEnv)
+	}
+	if cfg.Embeddings.APIKey != "sk-embed-from-override" {
+		t.Fatalf("embeddings key not resolved from overridden env: got %q", cfg.Embeddings.APIKey)
+	}
+}
+
+// TestEmbeddingsKeyNeverRenderedToTOML guards the toml:"-" tag on the resolved
+// embeddings key: it must never appear in TOML serialization.
+func TestEmbeddingsKeyNeverRenderedToTOML(t *testing.T) {
+	cfg := Defaults()
+	cfg.Embeddings.Enabled = true
+	cfg.Embeddings.APIKeyEnv = "EMBEDDINGS_API_KEY"
+	cfg.Embeddings.APIKey = "sk-embed-secret-rendered"
+	out, err := RenderTOML(cfg)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "sk-embed-secret-rendered") {
+		t.Errorf("RenderTOML leaked the embeddings API key:\n%s", out)
+	}
+}
+
 // TestMigrateRoundTripsAndValidates proves `config migrate` produces a valid,
 // loadable v2 config that preserves provider details — including a loopback http
 // base URL with its allow_insecure_http_localhost opt-in and custom role models.
