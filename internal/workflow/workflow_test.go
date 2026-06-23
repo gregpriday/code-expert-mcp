@@ -2,10 +2,12 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gregpriday/codeexpert/internal/config"
@@ -175,4 +177,108 @@ func (emptyProvider) Generate(ctx context.Context, req provider.GenerationReques
 	}
 	body := `{"findings":[]}`
 	return provider.GenerationResponse{Text: body, StructuredJSON: []byte(body), ModelID: req.Model}, nil
+}
+
+// errorProvider fails every Generate call, simulating a provider outage.
+type errorProvider struct{}
+
+func (errorProvider) ListModels(ctx context.Context) ([]provider.ModelInfo, error) { return nil, nil }
+func (errorProvider) Capabilities(ctx context.Context) provider.ProviderCapabilities {
+	return provider.ProviderCapabilities{Dialect: "responses", SupportsTools: true, SupportsStructured: true}
+}
+func (errorProvider) Generate(ctx context.Context, req provider.GenerationRequest) (provider.GenerationResponse, error) {
+	return provider.GenerationResponse{}, fmt.Errorf("simulated provider failure")
+}
+
+// recordingProvider captures every GenerationRequest while delegating the
+// response logic to an embedded fakeProvider, so the pipeline still completes.
+type recordingProvider struct {
+	*fakeProvider
+	mu       sync.Mutex
+	requests []provider.GenerationRequest
+}
+
+func (r *recordingProvider) Generate(ctx context.Context, req provider.GenerationRequest) (provider.GenerationResponse, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, req)
+	r.mu.Unlock()
+	return r.fakeProvider.Generate(ctx, req)
+}
+
+// TestPlanPropagatesProviderError confirms that a hard provider failure during
+// synthesis surfaces as an error from Plan rather than a silent empty result.
+func TestPlanPropagatesProviderError(t *testing.T) {
+	dir, _ := tempGitRepo(t)
+	cfg := config.Defaults()
+	cfg.Cache.Enabled = false
+	eng := &Engine{Cfg: cfg, Provider: errorProvider{}, Log: telemetry.Nop()}
+	_, err := eng.Plan(context.Background(), schema.PlanRequest{
+		Root: dir, Instructions: "Add a greeting flag", Mode: schema.PlanModePlan,
+	}, RunOptions{})
+	if err == nil {
+		t.Fatal("expected Plan to propagate the provider failure")
+	}
+}
+
+// TestSessionRequestsAreStreamed verifies the session sets Stream=true on the
+// provider requests it issues (NewSession always streams).
+func TestSessionRequestsAreStreamed(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	rec := &recordingProvider{fakeProvider: &fakeProvider{existingFile: rel}}
+	cfg := config.Defaults()
+	cfg.Cache.Enabled = false
+	eng := &Engine{Cfg: cfg, Provider: rec, Log: telemetry.Nop()}
+	if _, err := eng.Plan(context.Background(), schema.PlanRequest{
+		Root: dir, Instructions: "Add a greeting flag", Mode: schema.PlanModePlan,
+	}, RunOptions{}); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.requests) == 0 {
+		t.Fatal("expected the session to issue at least one provider request")
+	}
+	streamed := false
+	for _, req := range rec.requests {
+		if req.Stream {
+			streamed = true
+			break
+		}
+	}
+	if !streamed {
+		t.Error("expected at least one streamed request from the session")
+	}
+}
+
+// TestReviewEmptyChangeSet exercises the early-exit branch: a clean repository
+// with no working-tree changes has nothing to review, so Review returns zero
+// findings with an explicit scope limitation (and never claims approval).
+func TestReviewEmptyChangeSet(t *testing.T) {
+	dir, rel := tempGitRepo(t) // committed, clean working tree
+	eng := newTestEngine(rel)
+	res, err := eng.Review(context.Background(), schema.ReviewRequest{
+		Root: dir, Target: schema.ReviewTarget{Type: schema.TargetWorkingTree},
+	}, RunOptions{})
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if len(res.Findings) != 0 {
+		t.Errorf("clean repo should yield no findings, got %d", len(res.Findings))
+	}
+	foundScope := false
+	for _, l := range res.Limitations {
+		if strings.Contains(l.Message, "no reviewable changed files") {
+			foundScope = true
+		}
+	}
+	if !foundScope {
+		t.Errorf("expected a scope limitation for the empty change set, got %+v", res.Limitations)
+	}
+	if !strings.Contains(res.Markdown, "No blocking findings were found") {
+		t.Errorf("expected the no-findings message, got: %s", res.Markdown)
+	}
+	if strings.Contains(strings.ToLower(res.Markdown), "safe to merge") || strings.Contains(strings.ToLower(res.Markdown), "approved") {
+		t.Error("review must never claim safe-to-merge or approved")
+	}
 }
