@@ -58,6 +58,10 @@ export SAKANA_API_KEY="sk-..."
 ./codeexpert plan   --root . "Add idempotent retries to invoice submission without changing the public API"
 ./codeexpert help   --root . "Why does the queue worker sometimes process a job twice?"
 ./codeexpert review --scope staged "Check migration rollback and backward compatibility"
+
+# Optional: give review the change's intended behavior to check against. The
+# contract is treated as an UNTRUSTED hypothesis, never ground truth.
+./codeexpert review --scope staged --task-file ./task.json
 ```
 
 ### Register with Claude Code (or any MCP host)
@@ -149,16 +153,18 @@ exhaustion yields a `partial` result with explicit limitations rather than an un
 Fully implemented: the two MCP tools (stdio + Streamable HTTP), the full CLI, configuration,
 the OpenAI-compatible provider (Responses + Chat Completions, streaming, bounded retries),
 Git/filesystem snapshots, the change manifest for all six review targets, lexical search, the
-Go-AST + heuristic symbol index, related-test retrieval, the evidence store and citation
-validation, the content-addressed cache and run-artifact resources, the plan/help and review
+Go-AST + heuristic symbol index, related-test and co-changed-file retrieval, the evidence store
+and citation validation, run-artifact persistence and resources, the plan/help and review
 pipelines with validation and repair, and Markdown + JSON reporting.
 
 Deferred (interfaces/config present, not active by default): the optional embeddings tier and
 on-demand summaries; the sandboxed check **runner** (the policy, config, and `repo_run_check`
 gating exist; `checks.mode` defaults to `off`); SCIP/LSP/Ctags adapters; OpenTelemetry traces
-and metrics (structured logging is implemented). The cache uses a filesystem content store
-rather than SQLite to keep the default binary trivially CGO-free. The review finalizer ranks
-and phrases verified candidates deterministically (it cannot introduce new findings).
+and metrics (structured logging is implemented); result memoization (the content-addressed cache
+key exists, but identical snapshot+request+config+model runs are not yet served from a prior
+result). Run artifacts use a filesystem content store rather than SQLite to keep the default
+binary trivially CGO-free. The review finalizer ranks and phrases verified candidates
+deterministically (it cannot introduce new findings).
 
 ## Testing
 
