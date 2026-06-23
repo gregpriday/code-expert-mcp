@@ -158,6 +158,30 @@ func TestSearchFileContext(t *testing.T) {
 	}
 }
 
+// TestSearchFileAllocatesLessThanLineCopy enforces the core promise of the
+// offset-based rewrite: it must allocate strictly less than the old line-copy
+// implementation. Both call FindIndex once per line, so the regexp engine's own
+// per-call cost cancels out and the difference isolates the eliminated []string
+// and per-line []byte(line) copies. The gap is thousands of allocations for a
+// large file, so the comparison is robust rather than threshold-sensitive.
+func TestSearchFileAllocatesLessThanLineCopy(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 5000; i++ {
+		sb.WriteString("the quick brown fox jumps over the lazy dog\n")
+	}
+	content := sb.String()
+	fc := fileContent(content)
+	data := []byte(content)
+	re := regexp.MustCompile("nonexistent-token-xyz")
+
+	newAllocs := testing.AllocsPerRun(5, func() { _ = searchFile(fc, re, 2, 20) })
+	oldAllocs := testing.AllocsPerRun(5, func() { _ = referenceSearch(data, re, "test.go", "h1", 2, 20) })
+
+	if newAllocs >= oldAllocs {
+		t.Errorf("offset search did not reduce allocations: new=%v old=%v", newAllocs, oldAllocs)
+	}
+}
+
 // BenchmarkSearchFile_10KLines exercises the all-lines scan path (a rare match
 // so every line is inspected). The offset-based scan should allocate per
 // reported hit, not per file line.

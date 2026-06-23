@@ -125,7 +125,9 @@ func (s *Snapshot) ReadFile(_ context.Context, path string) (FileContent, error)
 		s.contents = map[string]FileContent{}
 	}
 	// Admit until the cache reaches the snapshot byte budget; oversized late
-	// files are returned uncached rather than growing memory without bound.
+	// files are returned uncached rather than growing memory without bound. The
+	// charge counts content bytes only (the small per-line offset table is not
+	// accounted), so the cap is an approximate ceiling, not an exact one.
 	cap := s.cfg.MaxTotalSnapshotBytes
 	if cap <= 0 || s.contentsBytes+int64(len(data)) <= cap {
 		s.contents[path] = fc
@@ -340,8 +342,10 @@ func newFileContent(meta FileMeta, data []byte) FileContent {
 // data[offsets[i] : <next '\n' or len>] without copying the file into a []string.
 // It returns nil for empty data.
 //
-// Offsets are int32: callers bound file size via MaxFileBytes (default 1 MiB,
-// far below math.MaxInt32), so no single cached file can overflow the table.
+// Offsets are int32, which holds any input shorter than math.MaxInt32 (~2 GiB).
+// The live search path feeds only readLimited output (bounded by MaxFileBytes,
+// default 1 MiB); review git-blob reads are not capped but realistic objects are
+// far below the limit, so a single file cannot overflow the table in practice.
 func LineOffsets(data []byte) []int32 {
 	n := len(data)
 	if n == 0 {

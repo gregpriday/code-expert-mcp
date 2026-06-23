@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -59,6 +60,7 @@ func TestLineOffsets(t *testing.T) {
 		{"blank line in middle", "a\n\nb\n", []int32{0, 2, 3}},
 		{"trailing blank line", "a\n\n", []int32{0, 2}},
 		{"only newline", "\n", []int32{0}},
+		{"newlines only", "\n\n\n", []int32{0, 1, 2}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,6 +172,66 @@ func TestReadFileCacheCapNotExceeded(t *testing.T) {
 	}
 	if len(snap.contents) != 0 {
 		t.Errorf("over-cap file was cached: %d entries", len(snap.contents))
+	}
+}
+
+func TestReadFileCacheAggregateCap(t *testing.T) {
+	// Two equally sized files; the cache budget holds exactly one of them.
+	fileA := "package a\n" + strings.Repeat("// a\n", 10)
+	fileB := "package b\n" + strings.Repeat("// b\n", 10)
+	if len(fileA) != len(fileB) {
+		t.Fatalf("test setup: files must be equal size, got %d and %d", len(fileA), len(fileB))
+	}
+	cfg := config.Defaults()
+	cfg.Repository.MaxTotalSnapshotBytes = int64(len(fileA))
+	snap := buildSnapshotForTest(t, cfg, map[string]string{"a.go": fileA, "b.go": fileB})
+	ctx := context.Background()
+
+	fa, err := snap.ReadFile(ctx, "a.go")
+	if err != nil {
+		t.Fatalf("read a: %v", err)
+	}
+	fb, err := snap.ReadFile(ctx, "b.go")
+	if err != nil {
+		t.Fatalf("read b: %v", err)
+	}
+	if string(fa.Bytes) != fileA || string(fb.Bytes) != fileB {
+		t.Error("aggregate-cap reads returned wrong content")
+	}
+	if snap.contentsBytes > cfg.Repository.MaxTotalSnapshotBytes {
+		t.Errorf("contentsBytes %d exceeds cap %d", snap.contentsBytes, cfg.Repository.MaxTotalSnapshotBytes)
+	}
+	if len(snap.contents) != 1 {
+		t.Errorf("expected exactly 1 cached entry under the cap, got %d", len(snap.contents))
+	}
+}
+
+func TestReadFileConcurrentSingleAdmission(t *testing.T) {
+	content := "package a\nvar A = 1\n"
+	snap := buildSnapshotForTest(t, config.Defaults(), map[string]string{"a.go": content})
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := snap.ReadFile(ctx, "a.go"); err != nil {
+				t.Errorf("read: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// The double-checked admit must charge the file once, not once per racer.
+	if snap.contentsBytes != int64(len(content)) {
+		t.Errorf("contentsBytes = %d, want %d (double-counted?)", snap.contentsBytes, len(content))
+	}
+	if len(snap.contents) != 1 {
+		t.Errorf("cache entries = %d, want 1", len(snap.contents))
 	}
 }
 

@@ -56,6 +56,9 @@ func (r *ReviewSnapshot) ReadHead(ctx context.Context, path string) (FileContent
 	}
 	meta, _ := r.snap.Stat(path)
 	meta.Path = path
+	// Git blob bytes are not bounded by MaxFileBytes here; the int32 offset table
+	// built by newFileContent is safe because review targets hold ordinary source
+	// objects, far below the ~2 GiB int32 limit.
 	return newFileContent(meta, data), nil
 }
 
