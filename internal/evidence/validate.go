@@ -55,20 +55,6 @@ func (v *Validator) ValidateLocation(ctx context.Context, path string, start, en
 	return nil
 }
 
-// ValidateRecord checks snapshot match and location for a stored record.
-func (v *Validator) ValidateRecord(ctx context.Context, rec schema.EvidenceRecord) error {
-	if rec.SnapshotID != "" && rec.SnapshotID != v.snap.ID() {
-		return schema.NewError(schema.CodeOutputInvalid, "evidence %s references a different snapshot", rec.ID)
-	}
-	switch rec.Kind {
-	case schema.EvidenceKindFile, schema.EvidenceKindDiff, schema.EvidenceKindSearch:
-		if rec.Path != "" {
-			return v.ValidateLocation(ctx, rec.Path, rec.StartLine, rec.EndLine)
-		}
-	}
-	return nil
-}
-
 func (v *Validator) lineCount(ctx context.Context, path string) (int, error) {
 	v.mu.Lock()
 	if n, ok := v.lineCounts[path]; ok {

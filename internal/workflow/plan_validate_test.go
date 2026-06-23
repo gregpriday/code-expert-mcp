@@ -46,6 +46,19 @@ func TestValidatePlanGates(t *testing.T) {
 		}
 	})
 
+	t.Run("too many steps", func(t *testing.T) {
+		tight := config.Defaults()
+		tight.Plan.MaxSteps = 1
+		p := baseValidPlan(rel)
+		p.Steps = append(p.Steps, schema.PlanStep{
+			ID: "P2", Title: "second", Files: p.Steps[0].Files, Validation: p.Steps[0].Validation,
+		})
+		issues := validatePlan(ctx, &p, snap, evidence.NewStore(snap.ID()), tight)
+		if !hasIssue(issues, "exceeding the configured maximum") {
+			t.Errorf("want max-steps issue, got %v", issues)
+		}
+	})
+
 	t.Run("empty goal", func(t *testing.T) {
 		p := baseValidPlan(rel)
 		p.Goal = "  "

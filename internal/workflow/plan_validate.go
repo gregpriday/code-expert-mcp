@@ -23,6 +23,10 @@ func validatePlan(ctx context.Context, plan *schema.ImplementationPlan, snap *re
 		issues = append(issues, "plan.goal is empty")
 	}
 
+	if cfg.Plan.MaxSteps > 0 && len(plan.Steps) > cfg.Plan.MaxSteps {
+		issues = append(issues, fmt.Sprintf("plan has %d steps, exceeding the configured maximum of %d", len(plan.Steps), cfg.Plan.MaxSteps))
+	}
+
 	ids := map[string]bool{}
 	for _, s := range plan.Steps {
 		if s.ID == "" {
