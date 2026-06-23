@@ -26,6 +26,13 @@ type FileContent struct {
 	Meta  FileMeta
 	Bytes []byte
 	Lines int
+	// LineOffsets holds the 0-based byte start offset of each text line in Bytes,
+	// using the same line definition as bufio.Scanner's ScanLines. It is built
+	// once by newFileContent so search paths can slice lines without copying the
+	// whole file into a []string on every query. A nil slice means the offsets
+	// were not precomputed (e.g. empty content); callers may rebuild via
+	// LineOffsets(Bytes).
+	LineOffsets []int32
 }
 
 // ChangeManifest is the frozen description of a review target's changes.
