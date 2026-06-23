@@ -75,7 +75,7 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 
 	var b strings.Builder
 	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain.\nEach candidate cites evidence by ID; resolve those IDs against the Evidence catalog below. If a cited ID is listed as NOT FOUND, treat the claim as unsupported.\n\n")
-	b.WriteString(renderEvidenceCatalog(evid, cands))
+	b.WriteString(renderEvidenceForVerifier(evid, cands))
 	b.WriteString("\n")
 	for i, c := range cands {
 		fmt.Fprintf(&b, "## Candidate %d\nTitle: %s\nLocation: %s:%d-%d\nCategory: %s\nClaim: %s\nTrigger: %s\nImpact: %s\nRecommendation: %s\nAssumptions: %s\n%s\n",
@@ -281,13 +281,15 @@ func evidenceRank(l schema.EvidenceLevel) int {
 	return 0
 }
 
-// renderEvidenceCatalog resolves every evidence ID cited across all candidates
-// and renders each underlying record exactly once, so the verifier judges
-// against real evidence rather than opaque ID strings. Deduplicating here means a
-// record cited by N candidates is rendered once instead of N times — candidates
-// reference it by ID alone (see renderCandidateEvidenceRefs). IDs that do not
-// resolve are flagged once as untrustworthy.
-func renderEvidenceCatalog(evid *evidence.Store, cands []candidateFinding) string {
+// renderEvidenceForVerifier resolves every evidence ID cited across all
+// candidates and renders each underlying record exactly once, so the verifier
+// judges against real evidence rather than opaque ID strings. Deduplicating here
+// means a record cited by N candidates is rendered once instead of N times —
+// candidates reference it by ID alone (see renderCandidateEvidenceRefs). IDs that
+// do not resolve are flagged once as untrustworthy. The name marks this as
+// verification-context rendering: missing evidence is surfaced as
+// not-to-be-trusted rather than silently omitted.
+func renderEvidenceForVerifier(evid *evidence.Store, cands []candidateFinding) string {
 	seen := map[string]bool{}
 	var ids []string
 	for _, c := range cands {
