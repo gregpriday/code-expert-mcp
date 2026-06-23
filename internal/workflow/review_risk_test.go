@@ -72,6 +72,46 @@ func TestBuildRiskMapCategoriesAndPriorities(t *testing.T) {
 	}
 }
 
+func TestBuildRiskMapSingleFileDoubleBump(t *testing.T) {
+	// One path that matches both the compatibility keyword rule ("api", +1) and
+	// the dependency/build rule (go.mod basename, +2) must accumulate to 3.
+	byCat := areaByCategory(buildRiskMap(manifestOf("api/go.mod")))
+	compat, ok := byCat[schema.CategoryCompatibility]
+	if !ok {
+		t.Fatalf("api/go.mod should raise compatibility, got %+v", byCat)
+	}
+	if compat.Priority != 3 {
+		t.Errorf("single-file double-bump: compatibility priority = %d, want 3", compat.Priority)
+	}
+	if !reflect.DeepEqual(compat.Paths, []string{"api/go.mod"}) {
+		t.Errorf("compatibility paths = %v, want [api/go.mod]", compat.Paths)
+	}
+}
+
+// TestBuildRiskMapKeywordCoverage locks the full keyword list of every rule so a
+// keyword silently dropped from riskRules fails a test.
+func TestBuildRiskMapKeywordCoverage(t *testing.T) {
+	cases := []struct {
+		cat      schema.FindingCategory
+		keywords []string
+	}{
+		{schema.CategorySecurity, []string{"auth", "login", "password", "token", "permission", "acl", "crypto", "secret", "deserial", "unmarshal", "parse"}},
+		{schema.CategoryDataIntegrity, []string{"migrat", "schema", "persist", "cache", "store", "repository", "dao"}},
+		{schema.CategoryConcurrency, []string{"lock", "mutex", "goroutine", "async", "queue", "worker", "concurren", "atomic", "channel"}},
+		{schema.CategoryCompatibility, []string{"api", "schema", "proto", "interface", "handler", "endpoint", "route"}},
+		{schema.CategoryPerformance, []string{"loop", "query", "batch", "scan", "list", "render"}},
+		{schema.CategoryReliability, []string{"retry", "timeout", "error", "fail", "recover"}},
+	}
+	for _, c := range cases {
+		for _, kw := range c.keywords {
+			byCat := areaByCategory(buildRiskMap(manifestOf(kw + ".go")))
+			if _, ok := byCat[c.cat]; !ok {
+				t.Errorf("keyword %q should raise %s, got %+v", kw, c.cat, byCat)
+			}
+		}
+	}
+}
+
 func TestBuildRiskMapTriggersEachKeywordCategory(t *testing.T) {
 	cases := []struct {
 		path string
