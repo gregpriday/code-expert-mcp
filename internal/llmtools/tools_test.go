@@ -2,6 +2,7 @@ package llmtools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,4 +68,89 @@ func TestToolResultsAreLabeledUntrusted(t *testing.T) {
 			t.Errorf("evidence %s is not flagged untrusted: %+v", r.ID, r.Provenance)
 		}
 	}
+}
+
+// execJSON runs a tool call and decodes the JSON result into a generic map.
+func execJSON(t *testing.T, reg *Registry, name, args string) map[string]any {
+	t.Helper()
+	out := reg.Execute(context.Background(), provider.ToolCall{Name: name, Arguments: args})
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("%s result is not valid JSON %q: %v", name, out, err)
+	}
+	return m
+}
+
+func TestHandleManifest(t *testing.T) {
+	reg, _ := testRegistry(t)
+	m := execJSON(t, reg, "repo_get_manifest", "{}")
+	if _, ok := m["snapshot_id"].(string); !ok || m["snapshot_id"] == "" {
+		t.Errorf("manifest missing snapshot_id: %v", m)
+	}
+	if _, ok := m["repository"]; !ok {
+		t.Errorf("manifest missing repository brief: %v", m)
+	}
+}
+
+func TestHandleReadValidPath(t *testing.T) {
+	reg, evid := testRegistry(t)
+	m := execJSON(t, reg, "repo_read", `{"path":"main.go"}`)
+	if m["error"] != nil {
+		t.Fatalf("repo_read on a valid path returned an error: %v", m["error"])
+	}
+	content, _ := m["content"].(string)
+	if !strings.Contains(content, "func Foo") {
+		t.Errorf("repo_read content missing the file body, got %q", content)
+	}
+	evID, _ := m["evidence_id"].(string)
+	if evID == "" {
+		t.Error("repo_read must return an evidence_id")
+	}
+	if !strings.Contains(toString(m["note"]), "UNTRUSTED") {
+		t.Errorf("repo_read must carry the untrusted-data note, got %v", m["note"])
+	}
+	// The cited evidence must actually exist in the store.
+	if !evid.Has(evID) {
+		t.Errorf("evidence_id %q from repo_read is not in the store", evID)
+	}
+}
+
+func TestHandleReadMissingPath(t *testing.T) {
+	reg, _ := testRegistry(t)
+	m := execJSON(t, reg, "repo_read", `{"path":"does-not-exist.go"}`)
+	if m["error"] == nil {
+		t.Errorf("repo_read on a missing path must return an error payload, got %v", m)
+	}
+}
+
+func TestHandleFindSymbol(t *testing.T) {
+	reg, _ := testRegistry(t)
+	m := execJSON(t, reg, "repo_find_symbol", `{"name":"Foo"}`)
+	if m["error"] != nil {
+		t.Fatalf("repo_find_symbol returned an error: %v", m["error"])
+	}
+	syms, ok := m["symbols"].([]any)
+	if !ok || len(syms) == 0 {
+		t.Fatalf("repo_find_symbol should find Foo, got %v", m["symbols"])
+	}
+	first, _ := syms[0].(map[string]any)
+	if first["name"] != "Foo" {
+		t.Errorf("expected symbol Foo, got %v", first["name"])
+	}
+	if first["kind"] != "func" {
+		t.Errorf("expected kind func for Foo, got %v", first["kind"])
+	}
+}
+
+func TestExecuteUnknownTool(t *testing.T) {
+	reg, _ := testRegistry(t)
+	m := execJSON(t, reg, "repo_nonexistent", "{}")
+	if m["error"] == nil {
+		t.Errorf("unknown tool must return an error payload, got %v", m)
+	}
+}
+
+func toString(v any) string {
+	s, _ := v.(string)
+	return s
 }

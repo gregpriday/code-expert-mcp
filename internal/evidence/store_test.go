@@ -155,3 +155,157 @@ func TestStoreInsertionOrder(t *testing.T) {
 		}
 	}
 }
+
+func fileRecord(path string, start, end int) schema.EvidenceRecord {
+	return schema.EvidenceRecord{
+		Kind: schema.EvidenceKindFile, Path: path, StartLine: start, EndLine: end,
+		Summary: "content of " + path,
+	}
+}
+
+func TestAddAssignsIDAndSnapshot(t *testing.T) {
+	s := NewStore("snap-1")
+	if s.SnapshotID() != "snap-1" {
+		t.Fatalf("SnapshotID = %q, want snap-1", s.SnapshotID())
+	}
+	rec := s.Add(fileRecord("main.go", 1, 5))
+	if rec.ID == "" {
+		t.Error("Add should assign a stable ID")
+	}
+	if rec.SnapshotID != "snap-1" {
+		t.Errorf("Add should backfill the snapshot ID, got %q", rec.SnapshotID)
+	}
+
+	got, ok := s.Get(rec.ID)
+	if !ok {
+		t.Fatalf("Get(%q) miss", rec.ID)
+	}
+	if got.Path != "main.go" {
+		t.Errorf("stored record path = %q, want main.go", got.Path)
+	}
+	if !s.Has(rec.ID) {
+		t.Errorf("Has(%q) = false, want true", rec.ID)
+	}
+	if _, ok := s.Get("nope"); ok {
+		t.Error("Get on unknown ID should miss")
+	}
+}
+
+func TestIDDeterminismAndDistinctness(t *testing.T) {
+	s := NewStore("snap-1")
+	a := s.Add(fileRecord("main.go", 1, 5))
+	b := s.Add(fileRecord("main.go", 1, 5))
+	// Identical content coalesces to a single record.
+	if a.ID != b.ID {
+		t.Errorf("identical records should share an ID: %q vs %q", a.ID, b.ID)
+	}
+	if got := len(s.All()); got != 1 {
+		t.Errorf("dedup failed: All() = %d records, want 1", got)
+	}
+	// Different content yields a different ID.
+	c := s.Add(fileRecord("other.go", 1, 5))
+	if c.ID == a.ID {
+		t.Errorf("distinct records must not collide: both %q", c.ID)
+	}
+	if got := len(s.All()); got != 2 {
+		t.Errorf("All() = %d, want 2 after a distinct add", got)
+	}
+}
+
+func TestAllInsertionOrder(t *testing.T) {
+	s := NewStore("snap-1")
+	first := s.Add(fileRecord("a.go", 1, 2))
+	second := s.Add(fileRecord("b.go", 1, 2))
+	third := s.Add(fileRecord("c.go", 1, 2))
+	all := s.All()
+	if len(all) != 3 {
+		t.Fatalf("All() = %d records, want 3", len(all))
+	}
+	wantOrder := []string{first.ID, second.ID, third.ID}
+	for i, w := range wantOrder {
+		if all[i].ID != w {
+			t.Errorf("All()[%d].ID = %q, want %q (insertion order not preserved)", i, all[i].ID, w)
+		}
+	}
+}
+
+func TestRefsAndRefsFor(t *testing.T) {
+	s := NewStore("snap-1")
+	a := s.Add(fileRecord("a.go", 1, 2))
+	b := s.Add(fileRecord("b.go", 3, 4))
+
+	refs := s.Refs()
+	if len(refs) != 2 {
+		t.Fatalf("Refs() = %d, want 2", len(refs))
+	}
+	if refs[0].ID != a.ID || refs[0].Path != "a.go" {
+		t.Errorf("Refs()[0] = %+v, want a.go ref", refs[0])
+	}
+
+	sub := s.RefsFor([]string{b.ID, "unknown-id"})
+	if len(sub) != 1 {
+		t.Fatalf("RefsFor should skip unknown IDs: got %d, want 1", len(sub))
+	}
+	if sub[0].ID != b.ID {
+		t.Errorf("RefsFor()[0].ID = %q, want %q", sub[0].ID, b.ID)
+	}
+}
+
+// TestConcurrentAdd fans out goroutines each adding a distinct record (distinct
+// content => distinct deterministic ID), then asserts the store holds exactly
+// one record per goroutine with unique IDs. Run under -race, this guards the
+// store's mutex against concurrent-access regressions.
+func TestConcurrentAdd(t *testing.T) {
+	s := NewStore("snap-concurrent")
+	const n = 64
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			// Distinct path per goroutine guarantees a distinct ID.
+			s.Add(fileRecord("file-"+strconv.Itoa(i)+".go", i+1, i+2))
+		}(i)
+	}
+	wg.Wait()
+
+	all := s.All()
+	if len(all) != n {
+		t.Fatalf("All() = %d records, want %d", len(all), n)
+	}
+	seen := make(map[string]bool, n)
+	for _, r := range all {
+		if seen[r.ID] {
+			t.Errorf("duplicate ID after concurrent adds: %q", r.ID)
+		}
+		seen[r.ID] = true
+	}
+}
+
+// TestConcurrentReadWrite exercises concurrent readers and writers so the race
+// detector covers the Add/Get/All/Has paths together.
+func TestConcurrentReadWrite(t *testing.T) {
+	s := NewStore("snap-rw")
+	const n = 32
+
+	var wg sync.WaitGroup
+	wg.Add(n * 2)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			rec := s.Add(fileRecord("rw-"+strconv.Itoa(i)+".go", i+1, i+2))
+			s.Has(rec.ID)
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = s.All()
+			s.Refs()
+		}()
+	}
+	wg.Wait()
+
+	if got := len(s.All()); got != n {
+		t.Errorf("All() = %d, want %d", got, n)
+	}
+}
