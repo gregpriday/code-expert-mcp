@@ -141,15 +141,14 @@ func isDocPath(p string) bool {
 	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".rst") || strings.HasSuffix(lower, ".txt")
 }
 
+// topDir returns the leading one or two path components of dir, used to group
+// changes by top-level area. Root-relative dirs ("", ".") collapse to ".".
 func topDir(dir string) string {
 	if dir == "." || dir == "" {
 		return "."
 	}
 	parts := strings.SplitN(dir, "/", 3)
-	if len(parts) >= 2 {
-		return parts[0] + "/" + parts[1]
-	}
-	return parts[0]
+	return strings.Join(parts[:min(2, len(parts))], "/")
 }
 
 func sortedKeys(m map[string]bool) []string {

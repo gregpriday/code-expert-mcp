@@ -273,6 +273,10 @@ func trimLine(s string) string {
 	return s
 }
 
+// matchGlobs reports whether path is included given exclude (which takes
+// precedence) and include (empty means include everything) globs. Unlike
+// repo.matchAny it matches the full path only, with no basename fallback; the
+// two matchers are intentionally kept separate.
 func matchGlobs(path string, include, exclude []string) bool {
 	for _, g := range exclude {
 		if ok, _ := doublestar.Match(g, path); ok {

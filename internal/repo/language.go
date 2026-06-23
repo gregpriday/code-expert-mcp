@@ -91,6 +91,11 @@ func newClassifier(vendor, generated []string) classifier {
 func (c classifier) isVendored(p string) bool  { return matchAny(c.vendor, p) }
 func (c classifier) isGenerated(p string) bool { return matchAny(c.generated, p) }
 
+// matchAny reports whether p matches any of the globs. Unlike index.matchGlobs,
+// it also tries the basename so simple patterns like "*.pb.go" (which contain no
+// "/") classify generated/vendored files anywhere in the tree. This basename
+// fallback is load-bearing for vendor/generated classification; the two matchers
+// are intentionally not consolidated.
 func matchAny(globs []string, p string) bool {
 	for _, g := range globs {
 		if ok, _ := doublestar.Match(g, p); ok {
