@@ -203,6 +203,41 @@ func reviewableFiles(m *repo.ChangeManifest, cfg config.Config, policy schema.Re
 	return out
 }
 
+// riskRule maps a deterministic path signal to a review risk category and the
+// priority weight it contributes. Rules are evaluated in order for every changed
+// file; all matching rules accumulate, so one file can raise several categories
+// and a single category can be raised by more than one rule.
+type riskRule struct {
+	category schema.FindingCategory
+	priority int
+	match    func(lowerPath string) bool
+}
+
+// keywordRule builds a riskRule that fires when the lowercased path contains any
+// of the given substrings.
+func keywordRule(cat schema.FindingCategory, priority int, keywords ...string) riskRule {
+	return riskRule{
+		category: cat,
+		priority: priority,
+		match:    func(lowerPath string) bool { return containsAny(lowerPath, keywords...) },
+	}
+}
+
+// riskRules is the declarative signal table for buildRiskMap. Baseline
+// correctness is applied unconditionally in the loop and is not listed here.
+var riskRules = []riskRule{
+	keywordRule(schema.CategorySecurity, 3, "auth", "login", "password", "token", "permission", "acl", "crypto", "secret", "deserial", "unmarshal", "parse"),
+	keywordRule(schema.CategoryDataIntegrity, 2, "migrat", "schema", "persist", "cache", "store", "repository", "dao"),
+	keywordRule(schema.CategoryConcurrency, 2, "lock", "mutex", "goroutine", "async", "queue", "worker", "concurren", "atomic", "channel"),
+	keywordRule(schema.CategoryCompatibility, 1, "api", "schema", "proto", "interface", "handler", "endpoint", "route"),
+	keywordRule(schema.CategoryPerformance, 1, "loop", "query", "batch", "scan", "list", "render"),
+	keywordRule(schema.CategoryReliability, 1, "retry", "timeout", "error", "fail", "recover"),
+	// Dependency and build/config manifest changes can break consumers and build
+	// reproducibility even when no source logic changes.
+	{category: schema.CategoryCompatibility, priority: 2, match: isDependencyOrBuildFile},
+	{category: schema.CategoryTesting, priority: 1, match: isTestPathLite},
+}
+
 // buildRiskMap derives review focus areas from deterministic change signals.
 func buildRiskMap(m *repo.ChangeManifest) []schema.RiskArea {
 	type acc struct {
@@ -223,32 +258,10 @@ func buildRiskMap(m *repo.ChangeManifest) []schema.RiskArea {
 	}
 	for _, f := range m.Files {
 		lower := strings.ToLower(f.Path)
-		switch {
-		case containsAny(lower, "auth", "login", "password", "token", "permission", "acl", "crypto", "secret", "deserial", "unmarshal", "parse"):
-			bump(schema.CategorySecurity, f.Path, 3)
-		}
-		if containsAny(lower, "migrat", "schema", "persist", "cache", "store", "repository", "dao") {
-			bump(schema.CategoryDataIntegrity, f.Path, 2)
-		}
-		if containsAny(lower, "lock", "mutex", "goroutine", "async", "queue", "worker", "concurren", "atomic", "channel") {
-			bump(schema.CategoryConcurrency, f.Path, 2)
-		}
-		if containsAny(lower, "api", "schema", "proto", "interface", "handler", "endpoint", "route") {
-			bump(schema.CategoryCompatibility, f.Path, 1)
-		}
-		if containsAny(lower, "loop", "query", "batch", "scan", "list", "render") {
-			bump(schema.CategoryPerformance, f.Path, 1)
-		}
-		if containsAny(lower, "retry", "timeout", "error", "fail", "recover") {
-			bump(schema.CategoryReliability, f.Path, 1)
-		}
-		if isDependencyOrBuildFile(lower) {
-			// Dependency and build/config manifest changes can break consumers and
-			// build reproducibility even when no source logic changes.
-			bump(schema.CategoryCompatibility, f.Path, 2)
-		}
-		if isTestPathLite(lower) {
-			bump(schema.CategoryTesting, f.Path, 1)
+		for _, rule := range riskRules {
+			if rule.match(lower) {
+				bump(rule.category, f.Path, rule.priority)
+			}
 		}
 		// Every changed file gets baseline correctness attention.
 		bump(schema.CategoryCorrectness, f.Path, 1)
