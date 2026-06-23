@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -91,6 +92,7 @@ func cmdReview(ctx context.Context, args []string) int {
 	includeUntracked := fs.Bool("include-untracked", true, "include untracked files in working-tree review")
 	profile := fs.String("profile", "", "fast | balanced | deep")
 	verification := fs.String("verification", "", "off | safe | configured | deep")
+	taskFile := fs.String("task-file", "", "JSON task contract (intent/acceptance criteria) to compare the change against")
 	format := fs.String("format", "markdown", "markdown | json | both")
 	output := fs.String("output", "", "write the report to this file")
 	failOn := fs.String("fail-on", "", "exit 7 if a finding at/above this severity is published: critical|high|medium")
@@ -132,6 +134,13 @@ func cmdReview(ctx context.Context, args []string) int {
 			UpstreamRef:      *upstream,
 			IncludeUntracked: &iu,
 		},
+	}
+	if *taskFile != "" {
+		task, terr := loadTaskContract(*taskFile)
+		if terr != nil {
+			return fail(terr)
+		}
+		req.Task = task
 	}
 	res, err := a.Engine.Review(ctx, req, workflow.RunOptions{Progress: stderrProgress(*quiet)})
 	if err != nil {
@@ -191,6 +200,20 @@ func severityValue(s schema.Severity) int {
 		return 1
 	}
 	return 0
+}
+
+// loadTaskContract reads a JSON task contract from a file. Its contents are
+// treated downstream as an untrusted statement of intent, never ground truth.
+func loadTaskContract(path string) (*schema.TaskContract, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, schema.NewError(schema.CodeInvalidArgument, "cannot read task file: %v", err)
+	}
+	var tc schema.TaskContract
+	if err := json.Unmarshal(b, &tc); err != nil {
+		return nil, schema.NewError(schema.CodeInvalidArgument, "task file is not valid JSON: %v", err)
+	}
+	return &tc, nil
 }
 
 // gatherInstructions resolves instructions from positional args or a file (these

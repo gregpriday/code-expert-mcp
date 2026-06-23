@@ -64,7 +64,7 @@ type verifiedCandidate struct {
 // verifyCandidates asks the verifier model to reject unsupported candidates. It
 // is instructed to default to rejection when uncertain.
 func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, cands []candidateFinding,
-	model, effort string, tracker *budget.Tracker, usage *usageAccumulator) []verifiedCandidate {
+	evid *evidence.Store, model, effort string, tracker *budget.Tracker, usage *usageAccumulator) []verifiedCandidate {
 
 	if len(cands) == 0 {
 		return nil
@@ -74,11 +74,11 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 	sess := e.NewSession(model, effort, system, nil, tracker, usage, nil)
 
 	var b strings.Builder
-	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain.\n\n")
+	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain.\nJudge each claim against the resolved evidence records shown below; if a cited record is marked NOT FOUND, treat the claim as unsupported.\n\n")
 	for i, c := range cands {
-		fmt.Fprintf(&b, "## Candidate %d\nLocation: %s:%d-%d\nCategory: %s\nClaim: %s\nTrigger: %s\nImpact: %s\nEvidence IDs: %s\nAssumptions: %s\n\n",
-			i, c.Location.Path, c.Location.StartLine, c.Location.EndLine, c.Category, c.Claim, c.Trigger, c.Impact,
-			strings.Join(c.EvidenceIDs, ", "), strings.Join(c.Assumptions, "; "))
+		fmt.Fprintf(&b, "## Candidate %d\nTitle: %s\nLocation: %s:%d-%d\nCategory: %s\nClaim: %s\nTrigger: %s\nImpact: %s\nRecommendation: %s\nAssumptions: %s\n%s\n",
+			i, c.Title, c.Location.Path, c.Location.StartLine, c.Location.EndLine, c.Category, c.Claim, c.Trigger, c.Impact,
+			c.Recommendation, strings.Join(c.Assumptions, "; "), renderEvidence(evid, c.EvidenceIDs))
 	}
 	b.WriteString("Return JSON {\"verdicts\": [{index, keep, evidence_level, severity, blocking, reason}, ...]} with one entry per candidate index.")
 
@@ -112,8 +112,8 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 
 // applyGates enforces the deterministic publication gates and policy limits,
 // recording suppression reasons.
-func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidence.Store, cfg config.Config,
-	policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
+func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidence.Store, changed map[string][]repo.LineRange,
+	cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
 
 	val := evidence.NewValidator(snap)
 	minLevel := minEvidenceLevel(cfg, policy)
@@ -137,10 +137,22 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 			suppress("invalid_location")
 			continue
 		}
+		// Deterministic changed-line attribution: a finding must point inside (or
+		// adjacent to) a changed hunk. Files with no recorded ranges (e.g. newly
+		// added or untracked) cannot be attributed deterministically, so they
+		// fall through to the verifier's judgment rather than being dropped.
+		if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine) {
+			suppress("outside_change")
+			continue
+		}
 		if vc.cand.Category == schema.CategoryStyle && !includeStyle {
 			suppress("style_disabled")
 			continue
 		}
+		// The model's self-reported evidence level is never trusted above what the
+		// cited, store-resident records can support (A needs an executed check; B
+		// needs tool-derived evidence; a validated in-change location is itself C).
+		vc.v.EvidenceLevel = capEvidenceLevel(vc.v.EvidenceLevel, evid, vc.cand.EvidenceIDs)
 		if evidenceRank(vc.v.EvidenceLevel) < evidenceRank(minLevel) {
 			suppress("below_evidence_threshold")
 			continue
@@ -191,12 +203,11 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 	return limited
 }
 
-// finalizeFindings asks the finalizer to phrase the surviving candidates. It must
-// not add new findings; we enforce that by matching back to survivors.
-func (e *Engine) finalizeFindings(ctx context.Context, survivors []verifiedCandidate, model, effort string,
-	tracker *budget.Tracker, usage *usageAccumulator, cfg config.Config, policy schema.ReviewPolicy) []schema.ReviewFinding {
-
-	// Build findings deterministically from survivors first (the safe baseline).
+// finalizeFindings assembles the surviving candidates into published findings.
+// It is fully deterministic and cannot introduce new findings. Evidence refs are
+// resolved against the store so only real, provenance-backed records are emitted
+// (model-supplied IDs that do not resolve are silently dropped).
+func (e *Engine) finalizeFindings(survivors []verifiedCandidate, evid *evidence.Store) []schema.ReviewFinding {
 	findings := make([]schema.ReviewFinding, 0, len(survivors))
 	for i, vc := range survivors {
 		c := vc.cand
@@ -219,7 +230,7 @@ func (e *Engine) finalizeFindings(ctx context.Context, survivors []verifiedCandi
 			Claim:          c.Claim,
 			Trigger:        c.Trigger,
 			Impact:         c.Impact,
-			Evidence:       collectEvidence(c.EvidenceIDs, tracker),
+			Evidence:       resolveRefs(evid, c.EvidenceIDs),
 			Recommendation: c.Recommendation,
 			Verification:   schema.VerificationInfo{Method: "verifier+location", Confirmed: true, Detail: vc.v.Reason},
 			Assumptions:    c.Assumptions,
@@ -228,12 +239,13 @@ func (e *Engine) finalizeFindings(ctx context.Context, survivors []verifiedCandi
 	return findings
 }
 
-func collectEvidence(ids []string, _ *budget.Tracker) []schema.EvidenceRef {
-	var refs []schema.EvidenceRef
-	for _, id := range ids {
-		refs = append(refs, schema.EvidenceRef{ID: id})
+// resolveRefs returns the store-resident references for the cited IDs, dropping
+// any that do not exist in the evidence store.
+func resolveRefs(evid *evidence.Store, ids []string) []schema.EvidenceRef {
+	if evid == nil {
+		return nil
 	}
-	return refs
+	return evid.RefsFor(ids)
 }
 
 func minEvidenceLevel(cfg config.Config, policy schema.ReviewPolicy) schema.EvidenceLevel {
@@ -265,4 +277,98 @@ func evidenceRank(l schema.EvidenceLevel) int {
 		return 1
 	}
 	return 0
+}
+
+// renderEvidence resolves cited evidence IDs against the store and renders the
+// underlying records so the verifier judges against real evidence rather than
+// opaque ID strings. IDs that do not resolve are flagged as untrustworthy.
+func renderEvidence(evid *evidence.Store, ids []string) string {
+	if len(ids) == 0 {
+		return "Evidence: none cited (judge from the diff and location only)."
+	}
+	var b strings.Builder
+	b.WriteString("Evidence records:\n")
+	var missing []string
+	for _, id := range ids {
+		rec, ok := lookupEvidence(evid, id)
+		if !ok {
+			missing = append(missing, id)
+			continue
+		}
+		loc := rec.Path
+		if rec.StartLine > 0 {
+			loc = fmt.Sprintf("%s:%d-%d", rec.Path, rec.StartLine, rec.EndLine)
+		}
+		summary := rec.Summary
+		if len(summary) > 200 {
+			summary = summary[:200] + "…"
+		}
+		fmt.Fprintf(&b, "  - [%s] %s %s — %s\n", rec.Kind, id, loc, summary)
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(&b, "  - NOT FOUND in evidence store (do not trust): %s\n", strings.Join(missing, ", "))
+	}
+	return b.String()
+}
+
+func lookupEvidence(evid *evidence.Store, id string) (schema.EvidenceRecord, bool) {
+	if evid == nil {
+		return schema.EvidenceRecord{}, false
+	}
+	return evid.Get(id)
+}
+
+// withinChange reports whether [start,end] overlaps any changed range, allowing a
+// small adjacent-context tolerance. Empty ranges or a zero start mean the finding
+// cannot be attributed to a hunk deterministically, so it passes through.
+func withinChange(ranges []repo.LineRange, start, end int) bool {
+	if len(ranges) == 0 || start <= 0 {
+		return true
+	}
+	if end < start {
+		end = start
+	}
+	const tol = 3
+	for _, r := range ranges {
+		if start <= r.End+tol && end >= r.Start-tol {
+			return true
+		}
+	}
+	return false
+}
+
+// capEvidenceLevel limits a self-reported level to what the cited, store-resident
+// records can support. It only ever lowers a level, never upgrades a claim.
+func capEvidenceLevel(claimed schema.EvidenceLevel, evid *evidence.Store, ids []string) schema.EvidenceLevel {
+	achievable := achievableEvidenceLevel(evid, ids)
+	if evidenceRank(claimed) <= evidenceRank(achievable) {
+		return claimed
+	}
+	return achievable
+}
+
+// achievableEvidenceLevel is the strongest level the cited records justify. A
+// validated, in-change location is itself code-path (C) evidence, so C is the
+// floor; tool-derived records raise it to B and an executed check to A.
+func achievableEvidenceLevel(evid *evidence.Store, ids []string) schema.EvidenceLevel {
+	best := schema.EvidenceCodePath
+	for _, id := range ids {
+		rec, ok := lookupEvidence(evid, id)
+		if !ok {
+			continue
+		}
+		var lvl schema.EvidenceLevel
+		switch rec.Kind {
+		case schema.EvidenceKindCheck:
+			lvl = schema.EvidenceExecutable
+		case schema.EvidenceKindSymbol, schema.EvidenceKindSearch, schema.EvidenceKindDiff, schema.EvidenceKindHistory:
+			lvl = schema.EvidenceTool
+		default:
+			lvl = schema.EvidenceCodePath
+		}
+		if evidenceRank(lvl) > evidenceRank(best) {
+			best = lvl
+		}
+	}
+	return best
 }

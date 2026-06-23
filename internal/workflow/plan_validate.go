@@ -37,12 +37,22 @@ func validatePlan(ctx context.Context, plan *schema.ImplementationPlan, snap *re
 
 	for _, s := range plan.Steps {
 		// File targets must exist (unless the action is to create a new file).
+		createPaths := map[string]bool{}
 		for _, f := range s.Files {
 			if f.Action == "create" {
+				createPaths[f.Path] = true
 				continue
 			}
 			if f.Path != "" && !val.FileExists(f.Path) {
 				issues = append(issues, fmt.Sprintf("step %s references non-existent file %q", s.ID, f.Path))
+			}
+		}
+		// Symbol targets that name a path must point at a real file (unless that
+		// file is being created by this step). Symbol-name resolution is left to
+		// the heuristic index; only the published path is validated here.
+		for _, sym := range s.Symbols {
+			if sym.Path != "" && !createPaths[sym.Path] && !val.FileExists(sym.Path) {
+				issues = append(issues, fmt.Sprintf("step %s references symbol %q in non-existent file %q", s.ID, sym.Name, sym.Path))
 			}
 		}
 		// Dependencies must reference known steps (DAG checked below).
@@ -84,7 +94,33 @@ func validatePlan(ctx context.Context, plan *schema.ImplementationPlan, snap *re
 			}
 		}
 	}
+
+	// Impacted-area paths that look like concrete files must exist in the
+	// snapshot. Directory- or subsystem-style entries are tolerated as
+	// informational hints rather than published file locations.
+	for _, ia := range plan.ImpactedAreas {
+		for _, p := range ia.Paths {
+			if looksLikeFilePath(p) && !val.FileExists(p) {
+				issues = append(issues, fmt.Sprintf("impacted area %q references non-existent file %q", ia.Area, p))
+			}
+		}
+	}
 	return dedupeStrings(issues)
+}
+
+// looksLikeFilePath reports whether p is specific enough to validate as a file
+// (its last segment contains a dot and it is not a directory-style path). This
+// avoids rejecting legitimate subsystem/area hints like "internal/workflow".
+func looksLikeFilePath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" || strings.HasSuffix(p, "/") {
+		return false
+	}
+	base := p
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		base = p[i+1:]
+	}
+	return strings.Contains(base, ".")
 }
 
 func mentionsSelfEdit(s string) bool {

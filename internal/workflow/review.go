@@ -80,16 +80,25 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	var limitations []schema.Limitation
 
 	if len(deduped) > 0 {
+		// Deterministic changed-line attribution: map each changed file to its
+		// frozen head-view hunks so the gates can confirm findings touch the change.
+		changedRanges := map[string][]repo.LineRange{}
+		for _, f := range manifest.Files {
+			if len(f.NewRanges) > 0 {
+				changedRanges[f.Path] = f.NewRanges
+			}
+		}
+
 		// Verify and gate.
 		progress("verification", "verifying candidates")
 		model, effort := e.routedSynthesisModel("review_verify", profile, complexity, highRisk)
-		verified := e.verifyCandidates(ctx, rs, deduped, model, effort, tracker, usage)
-		survivors := applyGates(verified, snap, evid, e.Cfg, req.Policy, &suppressed)
+		verified := e.verifyCandidates(ctx, rs, deduped, evid, model, effort, tracker, usage)
+		survivors := applyGates(verified, snap, evid, changedRanges, e.Cfg, req.Policy, &suppressed)
 
 		// Finalize (rank/phrase only survivors).
 		progress("synthesis", "finalizing findings")
 		if len(survivors) > 0 {
-			findings = e.finalizeFindings(ctx, survivors, model, effort, tracker, usage, e.Cfg, req.Policy)
+			findings = e.finalizeFindings(survivors, evid)
 		}
 	}
 
