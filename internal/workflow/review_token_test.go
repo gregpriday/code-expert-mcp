@@ -51,6 +51,28 @@ func TestEvidenceCatalogFlagsMissingOnce(t *testing.T) {
 	}
 }
 
+// TestEvidenceCatalogTrimsIDs proves a whitespace-padded ID resolves to its
+// record (deduped against the clean form) instead of being flagged NOT FOUND.
+func TestEvidenceCatalogTrimsIDs(t *testing.T) {
+	store := evidence.NewStore("snap")
+	store.Add(schema.EvidenceRecord{ID: "E-1", Kind: schema.EvidenceKindFile, Path: "main.go", StartLine: 1, EndLine: 2, Summary: "padded record"})
+	cands := []candidateFinding{
+		mkCandidate("main.go", 1, 2, schema.CategoryCorrectness, "fix", " E-1 "),
+		mkCandidate("main.go", 2, 3, schema.CategoryCorrectness, "fix", "E-1"),
+		mkCandidate("main.go", 3, 4, schema.CategoryCorrectness, "fix", "E-missing"),
+	}
+	out := renderEvidenceCatalog(store, cands)
+	if strings.Contains(out, "NOT FOUND in evidence store (do not trust): E-1") {
+		t.Errorf("padded ' E-1 ' should resolve to its record, not be flagged missing:\n%s", out)
+	}
+	if got := strings.Count(out, "padded record"); got != 1 {
+		t.Errorf("the record should render exactly once across padded + clean citations, got %d:\n%s", got, out)
+	}
+	if !strings.Contains(out, "E-missing") || strings.Count(out, "NOT FOUND") != 1 {
+		t.Errorf("the genuinely missing ID should be flagged once:\n%s", out)
+	}
+}
+
 // TestRenderCandidateEvidenceRefs proves per-candidate lines stay compact: IDs
 // only when cited, an explicit note when not.
 func TestRenderCandidateEvidenceRefs(t *testing.T) {
@@ -113,10 +135,14 @@ func TestCandidatePassesShareStablePrefix(t *testing.T) {
 	briefs := map[string]bool{}
 	n := 0
 	for _, c := range rec.calls {
-		// Candidate-pass requests are the only ones that carry the frozen diff as
-		// their first user message; the verifier and report passes do not.
-		if len(c.Input) < 2 || !strings.Contains(c.Input[0].Content, diffMarker) {
+		// Count only the per-pass synthesis calls (one per pass), not exploration
+		// rounds — both carry the shared prefix, but the synthesis call is the unit
+		// of "one pass" we are asserting parity across.
+		if c.OutputSchema == nil || c.OutputSchema.Name != "review_candidates" || len(c.Input) < 2 {
 			continue
+		}
+		if !strings.Contains(c.Input[0].Content, diffMarker) {
+			t.Fatalf("candidate-pass first user message should carry the frozen diff, got:\n%s", c.Input[0].Content)
 		}
 		if n == 0 {
 			sharedInstr = c.Instructions
@@ -131,8 +157,8 @@ func TestCandidatePassesShareStablePrefix(t *testing.T) {
 		}
 		briefs[c.Input[1].Content] = true
 	}
-	if n < 3 {
-		t.Fatalf("expected at least 3 candidate-pass requests (3 passes), got %d", n)
+	if n != 3 {
+		t.Fatalf("expected exactly 3 candidate-pass synthesis calls (3 passes), got %d", n)
 	}
 	if sharedInstr != prompts.MustGet(prompts.CommonSystem) {
 		t.Errorf("candidate system prompt should be exactly CommonSystem, got:\n%s", sharedInstr)

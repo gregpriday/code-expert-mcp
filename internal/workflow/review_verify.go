@@ -292,7 +292,10 @@ func renderEvidenceCatalog(evid *evidence.Store, cands []candidateFinding) strin
 	var ids []string
 	for _, c := range cands {
 		for _, id := range c.EvidenceIDs {
-			if strings.TrimSpace(id) == "" || seen[id] {
+			// Normalize before dedup/lookup so a padded "E-1 " resolves to the same
+			// record as "E-1" instead of being falsely flagged NOT FOUND.
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
 				continue
 			}
 			seen[id] = true
@@ -300,7 +303,7 @@ func renderEvidenceCatalog(evid *evidence.Store, cands []candidateFinding) strin
 		}
 	}
 	if len(ids) == 0 {
-		return "# Evidence catalog\nNo evidence cited by any candidate; judge from the diff and locations only.\n"
+		return "# Evidence catalog\nNo evidence cited by any candidate; judge from the candidate descriptions and locations only.\n"
 	}
 	var b strings.Builder
 	b.WriteString("# Evidence catalog (resolved records; candidates cite these by ID)\n")
@@ -333,12 +336,12 @@ func renderEvidenceCatalog(evid *evidence.Store, cands []candidateFinding) strin
 func renderCandidateEvidenceRefs(ids []string) string {
 	var cited []string
 	for _, id := range ids {
-		if strings.TrimSpace(id) != "" {
+		if id = strings.TrimSpace(id); id != "" {
 			cited = append(cited, id)
 		}
 	}
 	if len(cited) == 0 {
-		return "Evidence: none cited (judge from the diff and location only)."
+		return "Evidence: none cited (judge from the candidate description and location only)."
 	}
 	return "Evidence IDs (see catalog above): " + strings.Join(cited, ", ")
 }
