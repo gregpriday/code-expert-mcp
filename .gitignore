@@ -13,3 +13,34 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Go binaries & plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Compiled output for this module
+/codeexpert
+/CodeExpertMCP
+/bin/
+/dist/
+
+# Go test & coverage / profiling output
+*.test
+*.out
+coverage.*
+*.prof
+*.pprof
+
+# Go workspace files (local, not shared)
+go.work
+go.work.sum
+
+# Dependency directory (uncomment if you do not commit vendored deps)
+# vendor/
+
+# Local runtime cache/run artifacts, only if cache.dir is pointed inside the repo
+# (the cache defaults to the OS user cache dir and stays out of the repo)
+.codeexpert/
