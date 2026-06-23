@@ -34,8 +34,9 @@ type Snapshot struct {
 	totalBy   int64
 	trunc     bool
 
-	mu       sync.Mutex
-	contents map[string][]byte
+	mu            sync.RWMutex
+	contents      map[string]FileContent
+	contentsBytes int64
 }
 
 // ID returns the content-addressed snapshot identifier.
@@ -92,12 +93,12 @@ func (s *Snapshot) ReadFile(_ context.Context, path string) (FileContent, error)
 	if !ok {
 		return FileContent{}, schema.NewError(schema.CodeInvalidArgument, "file %q is not in the snapshot", path)
 	}
-	s.mu.Lock()
-	if b, cached := s.contents[path]; cached {
-		s.mu.Unlock()
-		return FileContent{Meta: meta, Bytes: b, Lines: countLines(b)}, nil
+	s.mu.RLock()
+	fc, cached := s.contents[path]
+	s.mu.RUnlock()
+	if cached {
+		return fc, nil
 	}
-	s.mu.Unlock()
 
 	abs, ok := s.root.JoinWithin(path)
 	if !ok {
@@ -112,13 +113,26 @@ func (s *Snapshot) ReadFile(_ context.Context, path string) (FileContent, error)
 	if err != nil {
 		return FileContent{}, schema.NewError(schema.CodeInternal, "read %q: %v", path, err)
 	}
+	fc = newFileContent(meta, data)
+
 	s.mu.Lock()
-	if s.contents == nil {
-		s.contents = map[string][]byte{}
+	// Re-check for a racing insert by another reader before admitting.
+	if existing, ok := s.contents[path]; ok {
+		s.mu.Unlock()
+		return existing, nil
 	}
-	s.contents[path] = data
+	if s.contents == nil {
+		s.contents = map[string]FileContent{}
+	}
+	// Admit until the cache reaches the snapshot byte budget; oversized late
+	// files are returned uncached rather than growing memory without bound.
+	cap := s.cfg.MaxTotalSnapshotBytes
+	if cap <= 0 || s.contentsBytes+int64(len(data)) <= cap {
+		s.contents[path] = fc
+		s.contentsBytes += int64(len(data))
+	}
 	s.mu.Unlock()
-	return FileContent{Meta: meta, Bytes: data, Lines: countLines(data)}, nil
+	return fc, nil
 }
 
 // BuildSnapshot freezes the repository at root into an immutable Snapshot. It
@@ -129,7 +143,7 @@ func BuildSnapshot(ctx context.Context, root security.Root, cfg config.Repositor
 		cfg:      cfg,
 		byPath:   map[string]int{},
 		class:    newClassifier(cfg.VendorGlobs, cfg.GeneratedGlobs),
-		contents: map[string][]byte{},
+		contents: map[string]FileContent{},
 	}
 	if cfg.RespectIgnoreFile {
 		s.ignore = loadIgnoreFile(root.Canonical, cfg.IgnoreFile)
@@ -306,6 +320,46 @@ func countLines(b []byte) int {
 		}
 	}
 	return n
+}
+
+// newFileContent wraps file bytes with metadata and a precomputed line-offset
+// table, the single constructor used by all snapshot read paths.
+func newFileContent(meta FileMeta, data []byte) FileContent {
+	return FileContent{
+		Meta:        meta,
+		Bytes:       data,
+		Lines:       countLines(data),
+		LineOffsets: LineOffsets(data),
+	}
+}
+
+// LineOffsets returns the 0-based byte start offset of each text line in data.
+// It uses the same line definition as bufio.Scanner's ScanLines: lines are split
+// on '\n', and a trailing '\n' does not produce an empty final line. The result
+// has one entry per scanned line, so search paths can slice a line as
+// data[offsets[i] : <next '\n' or len>] without copying the file into a []string.
+// It returns nil for empty data.
+//
+// Offsets are int32: callers bound file size via MaxFileBytes (default 1 MiB,
+// far below math.MaxInt32), so no single cached file can overflow the table.
+func LineOffsets(data []byte) []int32 {
+	n := len(data)
+	if n == 0 {
+		return nil
+	}
+	offsets := make([]int32, 1, n/40+1)
+	offsets[0] = 0
+	for i := 0; i < n; i++ {
+		if data[i] == '\n' {
+			start := i + 1
+			// A '\n' at the very end terminates the last line without starting
+			// a new one (matches ScanLines: no trailing empty line).
+			if start < n {
+				offsets = append(offsets, int32(start))
+			}
+		}
+	}
+	return offsets
 }
 
 func min64(a, b int64) int64 {

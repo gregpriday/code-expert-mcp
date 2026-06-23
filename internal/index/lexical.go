@@ -106,7 +106,7 @@ func (e *LexicalEngine) Search(ctx context.Context, q SearchQuery) ([]SearchHit,
 		if rerr != nil || fc.Meta.Binary {
 			continue
 		}
-		fileHits := searchFile(fc.Bytes, re, fm.Path, fm.Hash, ctxLines, e.maxPerFile)
+		fileHits := searchFile(fc, re, ctxLines, e.maxPerFile)
 		for _, h := range fileHits {
 			hits = append(hits, h)
 			if len(hits) >= limit {
@@ -181,12 +181,22 @@ func (e *LexicalEngine) searchPaths(q SearchQuery, limit int) []SearchHit {
 	return hits
 }
 
-// searchFile scans content line by line for matches with context.
-func searchFile(content []byte, re *regexp.Regexp, path, hash string, ctxLines, maxPerFile int) []SearchHit {
-	lines := splitLines(content)
+// searchFile scans a file's bytes line by line for matches with context. It
+// slices each line directly out of the underlying buffer using the precomputed
+// line-offset table, allocating strings only for the lines it actually reports
+// (the match and its context) instead of copying every line into a []string.
+func searchFile(fc repo.FileContent, re *regexp.Regexp, ctxLines, maxPerFile int) []SearchHit {
+	data := fc.Bytes
+	offsets := fc.LineOffsets
+	if offsets == nil {
+		offsets = repo.LineOffsets(data)
+	}
+	path := fc.Meta.Path
+	hash := fc.Meta.Hash
 	var hits []SearchHit
-	for i, line := range lines {
-		loc := re.FindIndex([]byte(line))
+	for i := 0; i < len(offsets); i++ {
+		line := lineAt(data, offsets, i)
+		loc := re.FindIndex(line)
 		if loc == nil {
 			continue
 		}
@@ -194,16 +204,16 @@ func searchFile(content []byte, re *regexp.Regexp, path, hash string, ctxLines, 
 			Path:     path,
 			Line:     i + 1,
 			Column:   loc[0] + 1,
-			Match:    trimLine(line),
+			Match:    trimLineBytes(line),
 			FileHash: hash,
 		}
 		for j := i - ctxLines; j < i; j++ {
 			if j >= 0 {
-				h.ContextBefore = append(h.ContextBefore, trimLine(lines[j]))
+				h.ContextBefore = append(h.ContextBefore, trimLineBytes(lineAt(data, offsets, j)))
 			}
 		}
-		for j := i + 1; j <= i+ctxLines && j < len(lines); j++ {
-			h.ContextAfter = append(h.ContextAfter, trimLine(lines[j]))
+		for j := i + 1; j <= i+ctxLines && j < len(offsets); j++ {
+			h.ContextAfter = append(h.ContextAfter, trimLineBytes(lineAt(data, offsets, j)))
 		}
 		hits = append(hits, h)
 		if len(hits) >= maxPerFile {
@@ -211,6 +221,39 @@ func searchFile(content []byte, re *regexp.Regexp, path, hash string, ctxLines, 
 		}
 	}
 	return hits
+}
+
+// lineAt returns line i (0-based) from data as a sub-slice, with a trailing
+// carriage return stripped to match bufio.Scanner's ScanLines. The returned
+// slice aliases data and must not be mutated.
+func lineAt(data []byte, offsets []int32, i int) []byte {
+	start := int(offsets[i])
+	var end int
+	if i+1 < len(offsets) {
+		// The next line begins one byte past its terminating '\n', so that '\n'
+		// sits at offsets[i+1]-1 and is excluded from this line.
+		end = int(offsets[i+1]) - 1
+	} else {
+		// Last recorded line: ends at a trailing '\n' if present, else at EOF.
+		end = len(data)
+		if nl := bytes.IndexByte(data[start:], '\n'); nl >= 0 {
+			end = start + nl
+		}
+	}
+	line := data[start:end]
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	return line
+}
+
+// trimLineBytes converts a line slice to a display string, capping it at 400
+// bytes like trimLine but without first allocating the full line for long lines.
+func trimLineBytes(b []byte) string {
+	if len(b) > 400 {
+		return string(b[:400]) + "…"
+	}
+	return string(b)
 }
 
 func splitLines(content []byte) []string {

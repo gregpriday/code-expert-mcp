@@ -56,7 +56,7 @@ func (r *ReviewSnapshot) ReadHead(ctx context.Context, path string) (FileContent
 	}
 	meta, _ := r.snap.Stat(path)
 	meta.Path = path
-	return FileContent{Meta: meta, Bytes: data, Lines: countLines(data)}, nil
+	return newFileContent(meta, data), nil
 }
 
 // ReadBase returns the base-view bytes of a path, or an error if absent.
