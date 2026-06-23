@@ -68,6 +68,10 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile), nil
 	}
 
+	// Enrich the manifest with enclosing changed symbols so the tool-less
+	// diff-local pass receives what its prompt references.
+	enrichEnclosingSymbols(ctx, snap, manifest)
+
 	// Candidate passes (concurrent).
 	progress("candidates", "running candidate passes")
 	candidates := e.runCandidatePasses(ctx, rs, reg, riskMap, req, tracker, usage, profile, opts.Progress)
@@ -238,6 +242,11 @@ func buildRiskMap(m *repo.ChangeManifest) []schema.RiskArea {
 		if containsAny(lower, "retry", "timeout", "error", "fail", "recover") {
 			bump(schema.CategoryReliability, f.Path, 1)
 		}
+		if isDependencyOrBuildFile(lower) {
+			// Dependency and build/config manifest changes can break consumers and
+			// build reproducibility even when no source logic changes.
+			bump(schema.CategoryCompatibility, f.Path, 2)
+		}
 		if isTestPathLite(lower) {
 			bump(schema.CategoryTesting, f.Path, 1)
 		}
@@ -321,6 +330,22 @@ func containsAny(s string, subs ...string) bool {
 		if strings.Contains(s, sub) {
 			return true
 		}
+	}
+	return false
+}
+
+// isDependencyOrBuildFile reports whether a path is a dependency lockfile or a
+// build/packaging manifest, by basename.
+func isDependencyOrBuildFile(lowerPath string) bool {
+	base := lowerPath
+	if i := strings.LastIndexByte(lowerPath, '/'); i >= 0 {
+		base = lowerPath[i+1:]
+	}
+	switch base {
+	case "go.mod", "go.sum", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+		"cargo.toml", "cargo.lock", "requirements.txt", "pyproject.toml", "poetry.lock",
+		"gemfile", "gemfile.lock", "pom.xml", "build.gradle", "dockerfile", "makefile":
+		return true
 	}
 	return false
 }

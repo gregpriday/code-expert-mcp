@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/gregpriday/codeexpert/internal/budget"
+	"github.com/gregpriday/codeexpert/internal/index"
 	"github.com/gregpriday/codeexpert/internal/llmtools"
 	"github.com/gregpriday/codeexpert/internal/prompts"
 	"github.com/gregpriday/codeexpert/internal/repo"
@@ -145,6 +146,61 @@ func (e *Engine) runOnePass(ctx context.Context, reg *llmtools.Registry, model, 
 	return list.Findings
 }
 
+// enrichEnclosingSymbols fills each changed file's enclosing changed symbols by
+// intersecting its frozen hunks with the symbols the index finds in the file. It
+// is deterministic, read-only, and bounded; it is what lets the tool-less
+// diff-local pass receive the symbols its prompt references.
+func enrichEnclosingSymbols(ctx context.Context, snap *repo.Snapshot, m *repo.ChangeManifest) {
+	si := index.NewSymbolIndex(snap)
+	const maxFiles = 100
+	scanned := 0
+	for i := range m.Files {
+		f := &m.Files[i]
+		if f.Binary || f.Vendored || len(f.NewRanges) == 0 {
+			continue
+		}
+		if scanned >= maxFiles {
+			break
+		}
+		scanned++
+		syms, err := si.SymbolsInFile(ctx, f.Path)
+		if err != nil || len(syms) == 0 {
+			continue
+		}
+		seen := map[string]bool{}
+		var names []string
+		for _, s := range syms {
+			if !symbolOverlapsRanges(s.StartLine, s.EndLine, f.NewRanges) {
+				continue
+			}
+			label := s.Name
+			if s.Kind != "" {
+				label = s.Name + " (" + s.Kind + ")"
+			}
+			if !seen[label] {
+				seen[label] = true
+				names = append(names, label)
+			}
+		}
+		if len(names) > 12 {
+			names = names[:12]
+		}
+		f.Symbols = names
+	}
+}
+
+func symbolOverlapsRanges(start, end int, ranges []repo.LineRange) bool {
+	if end < start {
+		end = start
+	}
+	for _, r := range ranges {
+		if start <= r.End && end >= r.Start {
+			return true
+		}
+	}
+	return false
+}
+
 func buildDiffBlock(m *repo.ChangeManifest) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Target: %s (base %s -> head %s)\n", m.Target, m.BaseLabel, m.HeadLabel)
@@ -155,6 +211,9 @@ func buildDiffBlock(m *repo.ChangeManifest) string {
 			continue
 		}
 		fmt.Fprintf(&b, "### %s (%s, +%d/-%d)\n", f.Path, f.Status, f.Added, f.Deleted)
+		if len(f.Symbols) > 0 {
+			fmt.Fprintf(&b, "Enclosing changed symbols: %s\n", strings.Join(f.Symbols, ", "))
+		}
 		if f.Diff != "" {
 			diff := f.Diff
 			if len(diff) > 6000 {

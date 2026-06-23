@@ -54,6 +54,9 @@ type ChangedFile struct {
 	Language  string      `json:"language"`
 	Diff      string      `json:"-"` // unified diff text, frozen at snapshot time
 	NewRanges []LineRange `json:"new_ranges,omitempty"`
+	// Symbols are the enclosing changed symbols ("name (kind)"), populated by the
+	// analysis layer (the repo package itself has no symbol index).
+	Symbols []string `json:"symbols,omitempty"`
 }
 
 // LineRange is an inclusive 1-based line span in the head view.

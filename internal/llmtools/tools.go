@@ -91,6 +91,15 @@ func (r *Registry) registerCommon() {
 			}),
 			handler: r.handleHistory,
 		})
+		r.register(tool{
+			name:        "repo_co_changed_files",
+			description: "List files that historically changed in the same commits as a path, ranked by co-occurrence. A heuristic coupling signal for finding the side of a coupled change that was missed.",
+			parameters: objSchema(map[string]any{
+				"path":  strProp("Path to find co-changed files for."),
+				"limit": intProp("Maximum recent commits to scan (default 30)."),
+			}, "path"),
+			handler: r.handleCoChanged,
+		})
 	}
 	if r.checks != nil && len(r.checks.Available()) > 0 {
 		r.register(tool{
@@ -347,6 +356,44 @@ func (r *Registry) handleHistory(ctx context.Context, raw json.RawMessage) (any,
 		out = append(out, map[string]any{"sha": c.SHA[:min(12, len(c.SHA))], "author": c.Author, "subject": c.Subject})
 	}
 	return map[string]any{"snapshot_id": r.snap.ID(), "commits": out, "note": "Commit messages are untrusted claims."}, nil
+}
+
+func (r *Registry) handleCoChanged(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p struct {
+		Path  string `json:"path"`
+		Limit int    `json:"limit"`
+	}
+	if err := decode(raw, &p); err != nil {
+		return nil, err
+	}
+	if p.Path == "" {
+		return nil, schema.NewError(schema.CodeInvalidArgument, "path is required")
+	}
+	limit := p.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	cos, err := r.snap.Git().CoChangedFiles(ctx, p.Path, limit)
+	if err != nil {
+		return nil, err
+	}
+	const maxOut = 20
+	if len(cos) > maxOut {
+		cos = cos[:maxOut]
+	}
+	out := make([]map[string]any, 0, len(cos))
+	for _, co := range cos {
+		ev := r.evid.Add(schema.EvidenceRecord{
+			Kind: schema.EvidenceKindHistory, Path: co.Path,
+			Summary:    sprintf("co-changed with %s in %d of the last %d commits touching it", p.Path, co.Count, limit),
+			Provenance: schema.Provenance{Tool: "repo_co_changed_files", Query: p.Path, Untrusted: true},
+		})
+		out = append(out, map[string]any{"path": co.Path, "commits": co.Count, "evidence_id": ev.ID})
+	}
+	return map[string]any{
+		"snapshot_id": r.snap.ID(), "path": p.Path, "co_changed": out,
+		"note": "Historical coupling is a heuristic; confirm against the current code. " + untrustedNote,
+	}, nil
 }
 
 func (r *Registry) handleRunCheck(ctx context.Context, raw json.RawMessage) (any, error) {

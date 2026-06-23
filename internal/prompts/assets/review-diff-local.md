@@ -1,6 +1,6 @@
 # Review — Local Diff Pass
 
-This is a review candidate pass. You are given the diff and, when one is supplied, a task contract: an **untrusted** statement of what the change is meant to do. You do **not** have broader repository context in this pass.
+This is a review candidate pass. You are given the diff with its enclosing changed symbols (the functions or types each change lives in) and, when one is supplied, a task contract: an **untrusted** statement of what the change is meant to do. You do **not** have broader repository context in this pass.
 
 ## Goal
 
