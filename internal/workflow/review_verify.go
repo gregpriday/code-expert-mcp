@@ -74,11 +74,13 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 	sess := e.NewSession(model, effort, system, nil, tracker, usage, nil)
 
 	var b strings.Builder
-	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain.\nJudge each claim against the resolved evidence records shown below; if a cited record is marked NOT FOUND, treat the claim as unsupported.\n\n")
+	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain.\nEach candidate cites evidence by ID; resolve those IDs against the Evidence catalog below. If a cited ID is listed as NOT FOUND, treat the claim as unsupported.\n\n")
+	b.WriteString(renderEvidenceCatalog(evid, cands))
+	b.WriteString("\n")
 	for i, c := range cands {
 		fmt.Fprintf(&b, "## Candidate %d\nTitle: %s\nLocation: %s:%d-%d\nCategory: %s\nClaim: %s\nTrigger: %s\nImpact: %s\nRecommendation: %s\nAssumptions: %s\n%s\n",
 			i, c.Title, c.Location.Path, c.Location.StartLine, c.Location.EndLine, c.Category, c.Claim, c.Trigger, c.Impact,
-			c.Recommendation, strings.Join(c.Assumptions, "; "), renderEvidence(evid, c.EvidenceIDs))
+			c.Recommendation, strings.Join(c.Assumptions, "; "), renderCandidateEvidenceRefs(c.EvidenceIDs))
 	}
 	b.WriteString("Return JSON {\"verdicts\": [{index, keep, evidence_level, severity, blocking, reason}, ...]} with one entry per candidate index.")
 
@@ -279,15 +281,29 @@ func evidenceRank(l schema.EvidenceLevel) int {
 	return 0
 }
 
-// renderEvidence resolves cited evidence IDs against the store and renders the
-// underlying records so the verifier judges against real evidence rather than
-// opaque ID strings. IDs that do not resolve are flagged as untrustworthy.
-func renderEvidence(evid *evidence.Store, ids []string) string {
+// renderEvidenceCatalog resolves every evidence ID cited across all candidates
+// and renders each underlying record exactly once, so the verifier judges
+// against real evidence rather than opaque ID strings. Deduplicating here means a
+// record cited by N candidates is rendered once instead of N times — candidates
+// reference it by ID alone (see renderCandidateEvidenceRefs). IDs that do not
+// resolve are flagged once as untrustworthy.
+func renderEvidenceCatalog(evid *evidence.Store, cands []candidateFinding) string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, c := range cands {
+		for _, id := range c.EvidenceIDs {
+			if strings.TrimSpace(id) == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
 	if len(ids) == 0 {
-		return "Evidence: none cited (judge from the diff and location only)."
+		return "# Evidence catalog\nNo evidence cited by any candidate; judge from the diff and locations only.\n"
 	}
 	var b strings.Builder
-	b.WriteString("Evidence records:\n")
+	b.WriteString("# Evidence catalog (resolved records; candidates cite these by ID)\n")
 	var missing []string
 	for _, id := range ids {
 		rec, ok := lookupEvidence(evid, id)
@@ -309,6 +325,22 @@ func renderEvidence(evid *evidence.Store, ids []string) string {
 		fmt.Fprintf(&b, "  - NOT FOUND in evidence store (do not trust): %s\n", strings.Join(missing, ", "))
 	}
 	return b.String()
+}
+
+// renderCandidateEvidenceRefs emits the compact per-candidate evidence line: the
+// cited IDs only, resolved against the catalog rendered once at the top of the
+// prompt. This avoids re-expanding the same record under every candidate.
+func renderCandidateEvidenceRefs(ids []string) string {
+	var cited []string
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			cited = append(cited, id)
+		}
+	}
+	if len(cited) == 0 {
+		return "Evidence: none cited (judge from the diff and location only)."
+	}
+	return "Evidence IDs (see catalog above): " + strings.Join(cited, ", ")
 }
 
 func lookupEvidence(evid *evidence.Store, id string) (schema.EvidenceRecord, bool) {

@@ -239,16 +239,20 @@ func TestResolveRefsDropsUnknown(t *testing.T) {
 	}
 }
 
-func TestRenderEvidenceFlagsMissing(t *testing.T) {
+func TestRenderEvidenceCatalogFlagsMissing(t *testing.T) {
 	store := evidence.NewStore("snap")
 	store.Add(schema.EvidenceRecord{ID: "E-1", Kind: schema.EvidenceKindFile, Path: "main.go", StartLine: 1, EndLine: 2, Summary: "real record"})
-	out := renderEvidence(store, []string{"E-1", "E-missing"})
+	cands := []candidateFinding{
+		mkCandidate("main.go", 1, 2, schema.CategoryCorrectness, "fix", "E-1", "E-missing"),
+	}
+	out := renderEvidenceCatalog(store, cands)
 	for _, want := range []string{"E-1", "main.go:1-2", "real record", "NOT FOUND", "E-missing"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("renderEvidence output missing %q:\n%s", want, out)
+			t.Errorf("renderEvidenceCatalog output missing %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(renderEvidence(store, nil), "none cited") {
-		t.Error("empty evidence should render a 'none cited' note")
+	noCites := []candidateFinding{mkCandidate("main.go", 1, 2, schema.CategoryCorrectness, "fix")}
+	if !strings.Contains(renderEvidenceCatalog(store, noCites), "No evidence cited") {
+		t.Error("a catalog with no cited evidence should say so")
 	}
 }
