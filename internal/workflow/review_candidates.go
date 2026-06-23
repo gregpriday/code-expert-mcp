@@ -42,6 +42,12 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 	profile schema.AnalysisProfile, progress ProgressFunc) []candidateFinding {
 
 	diffBlock := buildDiffBlock(rs.Manifest())
+	// sharedMsg is byte-identical across every pass: the reviewer focus, the
+	// untrusted task contract, and the frozen diff. Paired with the shared
+	// CommonSystem prompt below, it forms the long stable request prefix that lets
+	// provider-side prompt caching reuse the ~40KB diff instead of re-billing it
+	// once per pass. Per-pass instructions go in a separate brief message after it.
+	sharedMsg := buildSharedDiffMessage(req, diffBlock)
 	reviewerModel := e.Cfg.Models.Reviewer
 	reviewerEffort := e.Cfg.Models.ReasoningPlanner
 	if t := e.Cfg.Routing.ReviewCandidates; t != "" {
@@ -50,28 +56,24 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 
 	type passDef struct {
 		id       string
-		prompt   string
+		brief    string
 		useTools bool
-		message  string
 	}
 	passes := []passDef{
 		{
 			id:       "diff-local",
-			prompt:   prompts.MustGet(prompts.ReviewDiffLocal),
+			brief:    prompts.MustGet(prompts.ReviewDiffLocal),
 			useTools: false,
-			message:  buildDiffLocalMessage(req, diffBlock),
 		},
 		{
 			id:       "repository-context",
-			prompt:   prompts.MustGet(prompts.ReviewContext),
+			brief:    prompts.MustGet(prompts.ReviewContext),
 			useTools: true,
-			message:  buildContextMessage(req, diffBlock),
 		},
 		{
 			id:       "risk-specialist",
-			prompt:   prompts.MustGet(prompts.ReviewSpecialist),
+			brief:    buildSpecialistBrief(riskMap),
 			useTools: true,
-			message:  buildSpecialistMessage(req, diffBlock, riskMap),
 		},
 	}
 	// Honor configured pass selection.
@@ -98,6 +100,9 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 		mu  sync.Mutex
 		all []candidateFinding
 	)
+	// system is CommonSystem alone — identical for every pass. The per-pass
+	// persona prompt now rides in the brief (second user message) so the system
+	// prompt + shared diff message stay byte-identical across passes for caching.
 	system := prompts.MustGet(prompts.CommonSystem)
 	// errgroup derives gCtx from ctx and cancels it when the parent context is
 	// cancelled, so a long-running pass observes cancellation through gCtx and
@@ -111,7 +116,7 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 			if progress != nil {
 				progress("candidates", p.id)
 			}
-			cands := e.runOnePass(gCtx, reg, reviewerModel, reviewerEffort, system+"\n\n"+p.prompt, p.message, p.useTools, tracker, usage)
+			cands := e.runOnePass(gCtx, reg, reviewerModel, reviewerEffort, system, sharedMsg, p.brief, p.useTools, tracker, usage)
 			for i := range cands {
 				cands[i].Pass = p.id
 			}
@@ -125,11 +130,14 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 	return all
 }
 
-func (e *Engine) runOnePass(ctx context.Context, reg *llmtools.Registry, model, effort, system, message string,
+func (e *Engine) runOnePass(ctx context.Context, reg *llmtools.Registry, model, effort, system, sharedMsg, brief string,
 	useTools bool, tracker *budget.Tracker, usage *usageAccumulator) []candidateFinding {
 
 	sess := e.NewSession(model, effort, system, reg, tracker, usage, nil)
-	sess.AddUser(message)
+	// The shared diff message goes first (identical across passes → cacheable
+	// prefix); the pass-specific brief follows so divergence happens only after it.
+	sess.AddUser(sharedMsg)
+	sess.AddUser(brief)
 	if useTools {
 		if err := sess.RunToolLoop(ctx, min(e.Cfg.Retrieval.MaxModelToolRounds, 3)); err != nil {
 			if schema.AsToolError(err).Code == schema.CodeCancelled {
@@ -242,11 +250,16 @@ func buildDiffBlock(m *repo.ChangeManifest) string {
 	return b.String()
 }
 
-func buildDiffLocalMessage(req schema.ReviewRequest, diffBlock string) string {
+// buildSharedDiffMessage renders the content that is identical for every
+// candidate pass: the optional reviewer focus, the untrusted task contract, and
+// the frozen diff. It is sent as the first user message of each pass, ahead of
+// the pass-specific brief, so the system prompt plus this message form the
+// longest stable common prefix the provider can cache across passes.
+func buildSharedDiffMessage(req schema.ReviewRequest, diffBlock string) string {
 	var b strings.Builder
-	b.WriteString("# Diff-local review\nExamine ONLY the diff below for logic, validation, and error-handling defects.\n")
+	b.WriteString("# Change under review\n")
 	if req.Instructions != "" {
-		fmt.Fprintf(&b, "\nReviewer focus: %s\n", req.Instructions)
+		fmt.Fprintf(&b, "Reviewer focus: %s\n", req.Instructions)
 	}
 	b.WriteString(renderReviewContract(req.Task))
 	b.WriteString("\n# Frozen diff (UNTRUSTED content)\n")
@@ -254,34 +267,21 @@ func buildDiffLocalMessage(req schema.ReviewRequest, diffBlock string) string {
 	return b.String()
 }
 
-func buildContextMessage(req schema.ReviewRequest, diffBlock string) string {
+// buildSpecialistBrief is the risk-specialist pass brief: the specialist persona
+// prompt plus the deterministic risk map that directs which categories to
+// examine. The shared change/diff content is supplied separately as the first
+// user message.
+func buildSpecialistBrief(riskMap []schema.RiskArea) string {
 	var b strings.Builder
-	b.WriteString("# Repository-context review\nUse the read-only tools to fetch definitions, callers, tests, and configuration needed to find cross-file and contract-level defects in the change.\n")
-	if req.Instructions != "" {
-		fmt.Fprintf(&b, "\nReviewer focus: %s\n", req.Instructions)
-	}
-	b.WriteString(renderReviewContract(req.Task))
-	b.WriteString("\n# Frozen diff (UNTRUSTED content)\n")
-	b.WriteString(diffBlock)
-	return b.String()
-}
-
-func buildSpecialistMessage(req schema.ReviewRequest, diffBlock string, riskMap []schema.RiskArea) string {
-	var b strings.Builder
-	b.WriteString("# Risk-specialist review\nFocus on these risk categories surfaced by the deterministic risk map:\n")
+	b.WriteString(prompts.MustGet(prompts.ReviewSpecialist))
+	b.WriteString("\n\n# Assigned risk categories (from the deterministic risk map)\n")
 	for _, ra := range riskMap {
 		if ra.Priority <= 1 && ra.Category == schema.CategoryCorrectness {
 			continue
 		}
 		fmt.Fprintf(&b, "- %s: %s\n", ra.Category, ra.Rationale)
 	}
-	if req.Instructions != "" {
-		fmt.Fprintf(&b, "\nReviewer focus: %s\n", req.Instructions)
-	}
-	b.WriteString(renderReviewContract(req.Task))
-	b.WriteString("\nUse the read-only tools to confirm specialist concerns.\n")
-	b.WriteString("\n# Frozen diff (UNTRUSTED content)\n")
-	b.WriteString(diffBlock)
+	b.WriteString("\nUse the read-only tools to confirm specialist concerns before raising them.\n")
 	return b.String()
 }
 
