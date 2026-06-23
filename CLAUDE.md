@@ -1,4 +1,6 @@
-# CodeExpert — repository guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Read-only repository analysis: an MCP server and CLI that produce plans, engineering help, and
 code reviews **without ever modifying the repository**. Two MCP tools only: `codeexpert_plan`
@@ -11,11 +13,16 @@ go build ./...                       # build everything
 go build -o codeexpert ./cmd/codeexpert
 go test ./...                        # unit + end-to-end (fake provider) + no-write invariant
 go test -race ./internal/workflow/   # candidate passes run concurrently
+go test ./internal/workflow/ -run TestNoWriteInvariant   # one test
 go vet ./...
 gofmt -l internal/ cmd/              # must print nothing
 ```
 
 The default build is CGO-free; keep it that way (rich indexers needing CGO must be optional).
+
+End-to-end pipeline tests need no network or fixtures: they drive the engine with a deterministic
+`fakeProvider` (`internal/workflow/workflow_test.go`) that branches on request content. To exercise
+plan/help/review logic, extend that fake's `Generate` rather than calling a live provider.
 
 ## Non-negotiable invariants
 
