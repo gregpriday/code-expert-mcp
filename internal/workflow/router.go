@@ -27,21 +27,22 @@ func resolveProfile(requested schema.AnalysisProfile, configured string) schema.
 // enforced ceilings. Request values win but are clamped to safety maxima.
 func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.Budget) budget.Limits {
 	l := budget.Limits{
-		Timeout:            30 * time.Minute,
+		Timeout:            cfg.Provider.RequestTimeout.Std(),
 		MaxModelToolRounds: cfg.Retrieval.MaxModelToolRounds,
 		MaxInternalTools:   cfg.Retrieval.MaxModelToolCalls,
 		MaxFilesRead:       cfg.Retrieval.MaxFileReads,
+		MaxBytesRead:       cfg.Retrieval.MaxBytesRead,
 		MaxContextTokens:   cfg.Retrieval.MaxContextTokens,
 		MaxOutputTokens:    cfg.Models.MaxOutputTokens,
 	}
 	switch profile {
 	case schema.ProfileFast:
-		l.MaxModelCalls = 3
+		l.MaxModelCalls = cfg.ProfileLimits.MaxModelCallsFast
 		l.MaxModelToolRounds = min(l.MaxModelToolRounds, 2)
 	case schema.ProfileDeep:
-		l.MaxModelCalls = 12
+		l.MaxModelCalls = cfg.ProfileLimits.MaxModelCallsDeep
 	default: // balanced
-		l.MaxModelCalls = 7
+		l.MaxModelCalls = cfg.ProfileLimits.MaxModelCallsBalanced
 	}
 
 	if b.TimeoutSeconds > 0 {

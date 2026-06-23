@@ -156,10 +156,13 @@ func (e *Engine) runOnePass(ctx context.Context, reg *llmtools.Registry, model, 
 // enrichEnclosingSymbols fills each changed file's enclosing changed symbols by
 // intersecting its frozen hunks with the symbols the index finds in the file. It
 // is deterministic, read-only, and bounded; it is what lets the tool-less
-// diff-local pass receive the symbols its prompt references.
-func enrichEnclosingSymbols(ctx context.Context, snap *repo.Snapshot, m *repo.ChangeManifest) {
+// diff-local pass receive the symbols its prompt references. maxFiles caps how
+// many changed files are scanned; a value <= 0 disables enrichment entirely.
+func enrichEnclosingSymbols(ctx context.Context, snap *repo.Snapshot, m *repo.ChangeManifest, maxFiles int) {
+	if maxFiles <= 0 {
+		return
+	}
 	si := index.NewSymbolIndex(snap)
-	const maxFiles = 100
 	scanned := 0
 	for i := range m.Files {
 		f := &m.Files[i]

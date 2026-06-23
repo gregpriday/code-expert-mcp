@@ -64,6 +64,7 @@ func Defaults() Config {
 			InitialContextTokens: 14000,
 			SearchResultLimit:    100,
 			UseRipgrep:           true,
+			MaxBytesRead:         0, // 0 = no default cap; per-request budget may set one
 		},
 		Embeddings: EmbeddingsConfig{
 			Enabled:       false,
@@ -87,20 +88,27 @@ func Defaults() Config {
 			IncludeAlternatives:      true,
 		},
 		Review: ReviewConfig{
-			DefaultProfile:      "balanced",
-			Passes:              []string{"diff-local", "repository-context", "risk-specialist"},
-			MaxBlockingFindings: 3,
-			MaxTotalFindings:    7,
-			MinimumEvidence:     "code-path",
-			IncludeStyle:        false,
-			IncludePraise:       false,
-			IncludeGenerated:    false,
+			DefaultProfile:       "balanced",
+			Passes:               []string{"diff-local", "repository-context", "risk-specialist"},
+			MaxBlockingFindings:  3,
+			MaxTotalFindings:     7,
+			MinimumEvidence:      "code-path",
+			IncludeStyle:         false,
+			IncludePraise:        false,
+			IncludeGenerated:     false,
+			MaxSymbolEnrichFiles: 100,
+			LineOverlapTolerance: 3,
 		},
 		Checks: ChecksConfig{
 			Mode:         "off",
 			Network:      false,
 			MaxParallel:  2,
 			MaxTotalTime: Duration(20 * time.Minute),
+		},
+		ProfileLimits: ProfileLimitsConfig{
+			MaxModelCallsFast:     3,
+			MaxModelCallsBalanced: 7,
+			MaxModelCallsDeep:     12,
 		},
 	}
 }

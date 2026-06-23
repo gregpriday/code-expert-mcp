@@ -141,7 +141,7 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 		// adjacent to) a changed hunk. Files with no recorded ranges (e.g. newly
 		// added or untracked) cannot be attributed deterministically, so they
 		// fall through to the verifier's judgment rather than being dropped.
-		if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine) {
+		if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine, cfg.Review.LineOverlapTolerance) {
 			suppress("outside_change")
 			continue
 		}
@@ -319,16 +319,16 @@ func lookupEvidence(evid *evidence.Store, id string) (schema.EvidenceRecord, boo
 }
 
 // withinChange reports whether [start,end] overlaps any changed range, allowing a
-// small adjacent-context tolerance. Empty ranges or a zero start mean the finding
-// cannot be attributed to a hunk deterministically, so it passes through.
-func withinChange(ranges []repo.LineRange, start, end int) bool {
+// small adjacent-context tolerance (tol lines on each side). Empty ranges or a
+// zero start mean the finding cannot be attributed to a hunk deterministically,
+// so it passes through. A tol of 0 requires exact overlap.
+func withinChange(ranges []repo.LineRange, start, end, tol int) bool {
 	if len(ranges) == 0 || start <= 0 {
 		return true
 	}
 	if end < start {
 		end = start
 	}
-	const tol = 3
 	for _, r := range ranges {
 		if start <= r.End+tol && end >= r.Start-tol {
 			return true

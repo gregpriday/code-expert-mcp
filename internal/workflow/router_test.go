@@ -2,10 +2,72 @@ package workflow
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gregpriday/codeexpert/internal/config"
 	"github.com/gregpriday/codeexpert/internal/schema"
 )
+
+// TestResolveLimitsFromConfig proves the per-profile model-call ceilings, the run
+// timeout, and the byte-read baseline come from config (issue #8) and that a
+// per-request budget still overrides them.
+func TestResolveLimitsFromConfig(t *testing.T) {
+	cfg := config.Defaults()
+
+	// Defaults map onto the historical 3/7/12 ceilings.
+	for _, tc := range []struct {
+		profile schema.AnalysisProfile
+		want    int
+	}{
+		{schema.ProfileFast, 3},
+		{schema.ProfileBalanced, 7},
+		{schema.ProfileDeep, 12},
+	} {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+			t.Errorf("%s default MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
+		}
+	}
+
+	// Timeout is wired from the provider request timeout (default and non-default).
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 30*time.Minute {
+		t.Errorf("Timeout = %v, want 30m (from provider.request_timeout)", got)
+	}
+	cfg.Provider.RequestTimeout = config.Duration(45 * time.Second)
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 45*time.Second {
+		t.Errorf("Timeout = %v, want 45s (from non-default provider.request_timeout)", got)
+	}
+
+	// All three profile ceilings are independently configurable.
+	cfg.ProfileLimits = config.ProfileLimitsConfig{MaxModelCallsFast: 4, MaxModelCallsBalanced: 8, MaxModelCallsDeep: 13}
+	for _, tc := range []struct {
+		profile schema.AnalysisProfile
+		want    int
+	}{
+		{schema.ProfileFast, 4},
+		{schema.ProfileBalanced, 8},
+		{schema.ProfileDeep, 13},
+	} {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+			t.Errorf("%s configured MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
+		}
+	}
+
+	// Configured byte-read baseline is honored.
+	cfg.Retrieval.MaxBytesRead = 8192
+	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{})
+	if l.MaxModelCalls != 13 {
+		t.Errorf("configured deep MaxModelCalls = %d, want 13", l.MaxModelCalls)
+	}
+	if l.MaxBytesRead != 8192 {
+		t.Errorf("MaxBytesRead baseline = %d, want 8192", l.MaxBytesRead)
+	}
+
+	// A per-request budget still wins over the config baseline.
+	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2, MaxBytesRead: 4096})
+	if l.MaxModelCalls != 2 || l.MaxBytesRead != 4096 {
+		t.Errorf("request budget override = (%d,%d), want (2,4096)", l.MaxModelCalls, l.MaxBytesRead)
+	}
+}
 
 // TestRoutingSelectsTier proves [routing] drives per-stage model selection,
 // overriding the profile/complexity escalation, and that an unset stage falls

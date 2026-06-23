@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gregpriday/codeexpert/internal/config"
@@ -39,6 +41,30 @@ func TestInitOpenAIPreset(t *testing.T) {
 	}
 	if cfg.Models.Scout != "gpt-5.4-mini" || cfg.Models.Verifier != "gpt-5.5" {
 		t.Errorf("openai models not resolved: small=%q large=%q", cfg.Models.Scout, cfg.Models.Verifier)
+	}
+}
+
+// TestInitEmitsConfigurableValueKeys proves the template surfaces the newly
+// configurable operational knobs (issue #8) as raw text. LoadFile pre-fills
+// defaults, so a struct-level check would pass even if the keys were missing;
+// asserting on the file text guards against the template silently dropping them.
+func TestInitEmitsConfigurableValueKeys(t *testing.T) {
+	dir := t.TempDir()
+	if code := cmdInit(context.Background(), []string{"--provider", "openai", "--project", dir}); code != exitOK {
+		t.Fatalf("init exit code %d", code)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ".codeexpert.toml"))
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		"max_bytes_read", "max_symbol_enrich_files", "line_overlap_tolerance",
+		"[profile_limits]", "max_model_calls_fast", "max_model_calls_balanced", "max_model_calls_deep",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("init template missing %q:\n%s", want, text)
+		}
 	}
 }
 
