@@ -28,17 +28,35 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 		}
 	}
 
-	// Timeout is wired from the provider request timeout.
+	// Timeout is wired from the provider request timeout (default and non-default).
 	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 30*time.Minute {
 		t.Errorf("Timeout = %v, want 30m (from provider.request_timeout)", got)
 	}
+	cfg.Provider.RequestTimeout = config.Duration(45 * time.Second)
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 45*time.Second {
+		t.Errorf("Timeout = %v, want 45s (from non-default provider.request_timeout)", got)
+	}
 
-	// Configured profile ceilings and byte-read baseline are honored.
-	cfg.ProfileLimits.MaxModelCallsDeep = 25
+	// All three profile ceilings are independently configurable.
+	cfg.ProfileLimits = config.ProfileLimitsConfig{MaxModelCallsFast: 4, MaxModelCallsBalanced: 8, MaxModelCallsDeep: 13}
+	for _, tc := range []struct {
+		profile schema.AnalysisProfile
+		want    int
+	}{
+		{schema.ProfileFast, 4},
+		{schema.ProfileBalanced, 8},
+		{schema.ProfileDeep, 13},
+	} {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+			t.Errorf("%s configured MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
+		}
+	}
+
+	// Configured byte-read baseline is honored.
 	cfg.Retrieval.MaxBytesRead = 8192
 	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{})
-	if l.MaxModelCalls != 25 {
-		t.Errorf("configured deep MaxModelCalls = %d, want 25", l.MaxModelCalls)
+	if l.MaxModelCalls != 13 {
+		t.Errorf("configured deep MaxModelCalls = %d, want 13", l.MaxModelCalls)
 	}
 	if l.MaxBytesRead != 8192 {
 		t.Errorf("MaxBytesRead baseline = %d, want 8192", l.MaxBytesRead)

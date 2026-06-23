@@ -76,10 +76,12 @@ func TestValidateRejectsNegativeConfigurableValues(t *testing.T) {
 		mutate func(*Config)
 	}{
 		{"negative fast profile limit", func(c *Config) { c.ProfileLimits.MaxModelCallsFast = -1 }},
+		{"negative balanced profile limit", func(c *Config) { c.ProfileLimits.MaxModelCallsBalanced = -1 }},
 		{"negative deep profile limit", func(c *Config) { c.ProfileLimits.MaxModelCallsDeep = -1 }},
 		{"negative max_bytes_read", func(c *Config) { c.Retrieval.MaxBytesRead = -1 }},
 		{"negative max_symbol_enrich_files", func(c *Config) { c.Review.MaxSymbolEnrichFiles = -1 }},
 		{"negative line_overlap_tolerance", func(c *Config) { c.Review.LineOverlapTolerance = -1 }},
+		{"negative request_timeout", func(c *Config) { c.Provider.RequestTimeout = Duration(-1) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

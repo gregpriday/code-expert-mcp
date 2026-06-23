@@ -182,6 +182,33 @@ func TestCapEvidenceLevel(t *testing.T) {
 	}
 }
 
+// TestApplyGatesUsesLineOverlapTolerance proves the changed-line attribution gate
+// reads cfg.Review.LineOverlapTolerance instead of a hardcoded tolerance.
+func TestApplyGatesUsesLineOverlapTolerance(t *testing.T) {
+	snap, rel := testSnapshot(t)
+	// Hunk on line 1 only; the candidate sits two lines below it (line 3).
+	changed := map[string][]repo.LineRange{rel: {{Start: 1, End: 1}}}
+	vc := mkVerified(mkCandidate(rel, 3, 3, schema.CategoryCorrectness, "fix it"), true, schema.EvidenceCodePath, true)
+
+	// tol = 0: exact overlap only -> suppressed as outside_change.
+	cfg := config.Defaults()
+	cfg.Review.LineOverlapTolerance = 0
+	stats := &schema.SuppressionStats{ByReason: map[string]int{}}
+	if got := applyGates([]verifiedCandidate{vc}, snap, evidence.NewStore(snap.ID()), changed, cfg, schema.ReviewPolicy{}, stats); len(got) != 0 {
+		t.Fatalf("tol=0 should suppress a finding two lines outside the hunk, %d survived", len(got))
+	}
+	if stats.ByReason["outside_change"] != 1 {
+		t.Errorf("tol=0 expected outside_change=1, got %+v", stats.ByReason)
+	}
+
+	// tol = 2: the same finding is within tolerance and survives.
+	cfg.Review.LineOverlapTolerance = 2
+	stats = &schema.SuppressionStats{ByReason: map[string]int{}}
+	if got := applyGates([]verifiedCandidate{vc}, snap, evidence.NewStore(snap.ID()), changed, cfg, schema.ReviewPolicy{}, stats); len(got) != 1 {
+		t.Fatalf("tol=2 should keep a finding within tolerance, got %d (suppressed %+v)", len(got), stats.ByReason)
+	}
+}
+
 func TestWithinChange(t *testing.T) {
 	r := []repo.LineRange{{Start: 10, End: 12}}
 	cases := []struct {

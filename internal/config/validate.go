@@ -101,6 +101,11 @@ func Validate(c *Config) error {
 	if c.Review.MaxSymbolEnrichFiles < 0 || c.Review.LineOverlapTolerance < 0 {
 		return schema.NewError(schema.CodeConfigInvalid, "review limits must not be negative")
 	}
+	// A negative request timeout would silently disable the run wall-clock ceiling
+	// (Tracker treats Timeout <= 0 as no deadline). Reject it; 0 means no limit.
+	if c.Provider.RequestTimeout < 0 {
+		return schema.NewError(schema.CodeConfigInvalid, "provider.request_timeout must not be negative")
+	}
 
 	// Profiles.
 	for name, p := range map[string]string{"plan.default_profile": c.Plan.DefaultProfile, "review.default_profile": c.Review.DefaultProfile} {
@@ -194,6 +199,9 @@ func validateProfiles(c *Config) error {
 		}
 		if err := validateStateMode(label+".state_mode", p.StateMode); err != nil {
 			return err
+		}
+		if p.RequestTimeout < 0 {
+			return schema.NewError(schema.CodeConfigInvalid, "%s.request_timeout must not be negative", label)
 		}
 	}
 	if len(c.Providers) > 0 && c.Provider.Active == "" {

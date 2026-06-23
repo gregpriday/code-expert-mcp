@@ -152,7 +152,7 @@ func renderV2Template(p presetDefaults, api string, comments bool) string {
 	c("# Reasoning effort per tier (low | medium | high | xhigh).\n")
 	fmt.Fprintf(&b, "[reasoning]\nsmall = %q\nlarge = %q\n\n", p.smallReasoning, p.largeReasoning)
 
-	c("# max_bytes_read caps total bytes read by model tools per run; 0 = no limit.\n")
+	c("# max_bytes_read caps total bytes read by the repo_read tool per run; 0 = no limit.\n")
 	b.WriteString("[retrieval]\nlexical = true\nsymbols = true\nsummaries = \"on-demand\"\nembeddings = false\nmax_files_per_run = 120\nmax_context_tokens = 60000\nmax_bytes_read = 0\n\n")
 	c("# max_symbol_enrich_files caps how many changed files get enclosing-symbol\n# enrichment (0 disables it); line_overlap_tolerance is the adjacent-context\n# tolerance (in lines) when attributing a finding to a changed hunk.\n")
 	b.WriteString("[review]\ndefault_profile = \"balanced\"\nmax_blocking_findings = 3\nmax_total_findings = 7\nminimum_evidence = \"code-path\"\ninclude_style = false\nmax_symbol_enrich_files = 100\nline_overlap_tolerance = 3\n\n")

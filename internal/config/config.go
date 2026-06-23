@@ -183,8 +183,10 @@ type RetrievalConfig struct {
 	InitialContextTokens int    `toml:"initial_context_tokens"`
 	SearchResultLimit    int    `toml:"search_result_limit"`
 	UseRipgrep           bool   `toml:"use_ripgrep"`
-	// MaxBytesRead is the default per-run cap on bytes read by model tools. Zero
-	// means no limit; a per-request budget (schema.Budget.MaxBytesRead) overrides it.
+	// MaxBytesRead is the default per-run cap on bytes read by the repo_read tool;
+	// 0 means no limit. The review's frozen diff and head-read tools serve
+	// already-bounded snapshot content and are not charged against it. A per-request
+	// budget (schema.Budget.MaxBytesRead) overrides this default.
 	MaxBytesRead int64 `toml:"max_bytes_read"`
 }
 
