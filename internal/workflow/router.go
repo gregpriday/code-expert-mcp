@@ -93,6 +93,38 @@ func (e *Engine) scoutModel() (string, string) {
 	return e.Cfg.Models.Scout, e.Cfg.Models.ReasoningScout
 }
 
+// tierModel resolves a model tier ("small" | "large") to a concrete model and
+// reasoning effort. It reads the resolved role fields (scout for small, verifier
+// for large) rather than the raw small_model/large_model tier inputs, because the
+// role fields are the post-everything values: config migration projects the tiers
+// onto them and environment overrides (CODEEXPERT_MODELS_*) are applied last, so
+// reading them here keeps routing consistent with those overrides.
+func (e *Engine) tierModel(tier string) (string, string) {
+	m := e.Cfg.Models
+	if tier == "large" {
+		return m.Verifier, m.ReasoningVerifier
+	}
+	return m.Scout, m.ReasoningScout
+}
+
+// routedScoutModel honors [routing].exploration when set, otherwise falls back
+// to the role-based scout model.
+func (e *Engine) routedScoutModel() (string, string) {
+	if t := e.Cfg.Routing.Exploration; t != "" {
+		return e.tierModel(t)
+	}
+	return e.scoutModel()
+}
+
+// routedSynthesisModel honors the [routing] tier for the named stage when set,
+// otherwise falls back to the profile/complexity escalation in synthesisModel.
+func (e *Engine) routedSynthesisModel(stage string, profile schema.AnalysisProfile, complexity int, highRisk bool) (string, string) {
+	if t := e.Cfg.Routing.For(stage); t != "" {
+		return e.tierModel(t)
+	}
+	return e.synthesisModel(profile, complexity, highRisk)
+}
+
 // reviewComplexity computes a deterministic 0-100 score and high-risk flag from
 // a change manifest.
 func reviewComplexity(m *repo.ChangeManifest) (int, bool) {

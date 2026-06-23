@@ -145,9 +145,11 @@ func (s *Session) RunToolLoop(ctx context.Context, maxRounds int) error {
 			}
 			return err
 		}
-		// Record the assistant turn (text + any tool calls).
+		// Record the assistant turn (text, tool calls, and the opaque provider
+		// output items so reasoning continuity survives into the next round).
 		s.messages = append(s.messages, provider.Message{
 			Role: provider.RoleAssistant, Content: resp.Text, ToolCalls: resp.ToolCalls,
+			ProviderItems: resp.ProviderItems,
 		})
 		if len(resp.ToolCalls) == 0 {
 			return nil // model is done exploring
@@ -192,8 +194,11 @@ func (s *Session) Synthesize(ctx context.Context, instruction string, out *provi
 	if len(clean) == 0 {
 		return nil, schema.NewError(schema.CodeOutputInvalid, "model returned no JSON object")
 	}
-	// Keep the assistant turn so a repair call has the prior attempt in context.
-	s.messages = append(s.messages, provider.Message{Role: provider.RoleAssistant, Content: string(clean)})
+	// Keep the assistant turn so a repair call has the prior attempt in context,
+	// carrying the opaque provider items so reasoning continuity holds into repair.
+	s.messages = append(s.messages, provider.Message{
+		Role: provider.RoleAssistant, Content: string(clean), ProviderItems: resp.ProviderItems,
+	})
 	return clean, nil
 }
 

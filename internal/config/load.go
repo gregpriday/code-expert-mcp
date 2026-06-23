@@ -49,6 +49,10 @@ func Load(root string) (*LoadResult, error) {
 		}
 	}
 
+	// Resolve version-2 inputs (profiles, tiers, reasoning) into the flat fields
+	// the engine reads — gated on the effective version. Environment overrides are
+	// applied last so they win over a profile and its tiers (see migrate.go).
+	applyVersionedInputs(&cfg)
 	applyEnvOverrides(&cfg)
 	resolveSecrets(&cfg)
 
@@ -63,6 +67,7 @@ func LoadFile(path string) (Config, error) {
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return cfg, schema.NewError(schema.CodeConfigInvalid, "config %s: %v", path, err)
 	}
+	applyVersionedInputs(&cfg)
 	applyEnvOverrides(&cfg)
 	resolveSecrets(&cfg)
 	return cfg, nil
@@ -128,10 +133,15 @@ func (c Config) String() string {
 	fmt.Fprintf(&b, "[server]\ntransport = %q\nlisten = %q\nlog_level = %q\nmax_concurrent_runs = %d\nrun_retention = %q\n\n",
 		c.Server.Transport, c.Server.Listen, c.Server.LogLevel, c.Server.MaxConcurrentRuns, c.Server.RunRetention.Std().String())
 	apiKeyPresent := c.Provider.APIKey != ""
-	fmt.Fprintf(&b, "[provider]\nkind = %q\napi = %q\nbase_url = %q\napi_key_env = %q\napi_key_present = %v\nrequest_timeout = %q\nmax_retries = %d\n\n",
+	b.WriteString("[provider]\n")
+	if c.Provider.Active != "" {
+		fmt.Fprintf(&b, "active = %q  # %d profile(s) defined; fields below are the resolved values\n", c.Provider.Active, len(c.Providers))
+	}
+	fmt.Fprintf(&b, "kind = %q\napi = %q\nbase_url = %q\napi_key_env = %q\napi_key_present = %v\nrequest_timeout = %q\nmax_retries = %d\n\n",
 		c.Provider.Kind, c.Provider.API, c.Provider.BaseURL, c.Provider.APIKeyEnv, apiKeyPresent, c.Provider.RequestTimeout.Std().String(), c.Provider.MaxRetries)
-	fmt.Fprintf(&b, "[models]\nscout = %q\nplanner = %q\nreviewer = %q\nverifier = %q\nmax_output_tokens = %d\n\n",
-		c.Models.Scout, c.Models.Planner, c.Models.Reviewer, c.Models.Verifier, c.Models.MaxOutputTokens)
+	// scout/verifier are the resolved small/large tiers the engine uses.
+	fmt.Fprintf(&b, "[models]\nsmall (scout) = %q\nlarge (verifier) = %q\nplanner = %q\nreviewer = %q\nmax_output_tokens = %d\n\n",
+		c.Models.Scout, c.Models.Verifier, c.Models.Planner, c.Models.Reviewer, c.Models.MaxOutputTokens)
 	fmt.Fprintf(&b, "[retrieval]\nlexical = %v\nsymbols = %v\nsummaries = %q\nembeddings = %v\nmax_files_per_run = %d\nmax_context_tokens = %d\n\n",
 		c.Retrieval.Lexical, c.Retrieval.Symbols, c.Retrieval.Summaries, c.Retrieval.Embeddings, c.Retrieval.MaxFilesPerRun, c.Retrieval.MaxContextTokens)
 	fmt.Fprintf(&b, "[cache]\nenabled = %v\nmax_size_gb = %g\nttl = %q\n\n",

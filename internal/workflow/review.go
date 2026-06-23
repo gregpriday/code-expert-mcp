@@ -82,7 +82,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	if len(deduped) > 0 {
 		// Verify and gate.
 		progress("verification", "verifying candidates")
-		model, effort := e.synthesisModel(profile, complexity, highRisk)
+		model, effort := e.routedSynthesisModel("review_verify", profile, complexity, highRisk)
 		verified := e.verifyCandidates(ctx, rs, deduped, model, effort, tracker, usage)
 		survivors := applyGates(verified, snap, evid, e.Cfg, req.Policy, &suppressed)
 

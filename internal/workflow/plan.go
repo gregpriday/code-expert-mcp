@@ -62,7 +62,7 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 
 	// Exploration with the scout model and read-only tools.
 	progress("exploration", "exploring repository")
-	scoutModel, scoutEffort := e.scoutModel()
+	scoutModel, scoutEffort := e.routedScoutModel()
 	system := prompts.MustGet(prompts.CommonSystem) + "\n\n" + prompts.MustGet(prompts.PlanExplore)
 	sess := e.NewSession(scoutModel, scoutEffort, system, reg, tracker, usage, opts.Progress)
 	sess.AddUser(buildPlanExploreMessage(it, e.preflight(ctx, snap, it, lex)))
@@ -76,7 +76,11 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 	// Synthesis: switch to the planner/verifier model, no tools.
 	progress("synthesis", "synthesizing")
 	complexity := len(evid.All())*2 + len(it.SearchAnchors)
-	model, effort := e.synthesisModel(profile, complexity, false)
+	synthStage := "plan_final"
+	if mode == schema.PlanModeHelp {
+		synthStage = "help_final"
+	}
+	model, effort := e.routedSynthesisModel(synthStage, profile, complexity, false)
 	sess.SwitchModel(model, effort)
 
 	var result schema.PlanResult

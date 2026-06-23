@@ -83,7 +83,7 @@ Commands:
   review      Review Git changes (working-tree, staged, range, commit, merge-base)
   index       Build/refresh the repository snapshot and report inventory
   doctor      Check environment, configuration, and provider connectivity
-  config      Inspect configuration (config print)
+  config      Inspect or migrate configuration (config print|migrate)
   cache       Manage the cache (cache status|gc|clear)
   version     Print the version
 

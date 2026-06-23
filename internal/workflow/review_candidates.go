@@ -41,6 +41,9 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 	diffBlock := buildDiffBlock(rs.Manifest())
 	reviewerModel := e.Cfg.Models.Reviewer
 	reviewerEffort := e.Cfg.Models.ReasoningPlanner
+	if t := e.Cfg.Routing.ReviewCandidates; t != "" {
+		reviewerModel, reviewerEffort = e.tierModel(t)
+	}
 
 	type passDef struct {
 		id       string

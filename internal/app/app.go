@@ -7,6 +7,7 @@ import (
 	"github.com/gregpriday/codeexpert/internal/config"
 	"github.com/gregpriday/codeexpert/internal/provider"
 	"github.com/gregpriday/codeexpert/internal/provider/openaicompat"
+	"github.com/gregpriday/codeexpert/internal/repo"
 	"github.com/gregpriday/codeexpert/internal/schema"
 	"github.com/gregpriday/codeexpert/internal/telemetry"
 	"github.com/gregpriday/codeexpert/internal/workflow"
@@ -23,6 +24,11 @@ type App struct {
 	Provider provider.Provider
 	Cache    *cache.Cache
 	Engine   *workflow.Engine
+	// Root is the effective repository root resolved from the explicit flag,
+	// CLAUDE_PROJECT_DIR, or the working directory. ProjectFile is the project
+	// config file that was loaded, or "" if none was found.
+	Root        string
+	ProjectFile string
 }
 
 // BuildOptions tune application construction.
@@ -36,8 +42,14 @@ type BuildOptions struct {
 
 // Build resolves configuration and constructs the application. Provider calls
 // are deferred; a missing API key is not fatal here (it surfaces at call time).
+//
+// The effective repository root is resolved BEFORE configuration is loaded so a
+// project .codeexpert.toml is discovered even when no --root is passed (it then
+// comes from CLAUDE_PROJECT_DIR or the working directory). This fixes the case
+// where project config was silently skipped for the common default-root path.
 func Build(opts BuildOptions) (*App, error) {
-	lr, err := config.Load(opts.Root)
+	effRoot := repo.DefaultRoot(opts.Root)
+	lr, err := config.Load(effRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -81,12 +93,14 @@ func Build(opts BuildOptions) (*App, error) {
 	eng := &workflow.Engine{Cfg: cfg, Provider: prov, Cache: c, Log: log}
 
 	return &App{
-		Config:   cfg,
-		Sources:  lr.SourcesNoted,
-		Logger:   log,
-		Provider: prov,
-		Cache:    c,
-		Engine:   eng,
+		Config:      cfg,
+		Sources:     lr.SourcesNoted,
+		Logger:      log,
+		Provider:    prov,
+		Cache:       c,
+		Engine:      eng,
+		Root:        effRoot,
+		ProjectFile: lr.ProjectFile,
 	}, nil
 }
 

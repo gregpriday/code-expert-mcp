@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -54,8 +55,23 @@ func New(opts Options) (*Client, error) {
 	httpc := opts.HTTPClient
 	if httpc == nil {
 		// RequestTimeout is enforced per-call via context, not the http.Client
-		// timeout, so long streaming calls are not killed prematurely.
-		httpc = &http.Client{}
+		// timeout, so long streaming calls are not killed prematurely. The
+		// connect timeout bounds only TCP dial + TLS handshake.
+		ct := opts.ConnectTimeout
+		if ct <= 0 {
+			ct = 30 * time.Second
+		}
+		httpc = &http.Client{
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           (&net.Dialer{Timeout: ct}).DialContext,
+				TLSHandshakeTimeout:   ct,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+		}
 	}
 	log := opts.Logger
 	if log == nil {

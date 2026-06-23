@@ -28,6 +28,13 @@ type Message struct {
 	// ToolCallID and Name are set on tool-result turns (Role == RoleTool).
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Name       string `json:"name,omitempty"`
+	// ProviderItems carries the opaque, dialect-specific output items returned for
+	// an assistant turn (e.g. Responses reasoning items) so they can be replayed
+	// verbatim on the next request, preserving reasoning continuity across tool
+	// rounds. Only the dialect translators (responses.go/chat.go) may inspect or
+	// emit these; workflow code must treat them as opaque and never depend on
+	// their contents.
+	ProviderItems []json.RawMessage `json:"provider_items,omitempty"`
 }
 
 // ToolCall is a model request to invoke a function tool.
@@ -79,6 +86,13 @@ type GenerationRequest struct {
 	ReasoningEffort string
 	Stream          bool
 	Metadata        map[string]string
+	// StoreState requests provider-side conversation state (Responses Store=true
+	// plus PreviousResponseID). Default false keeps the stateless manual-replay
+	// behavior required by Sakana and used for privacy-sensitive OpenAI use.
+	StoreState bool
+	// PreviousResponseID continues a stored Responses conversation when StoreState
+	// is set. Ignored in stateless mode.
+	PreviousResponseID string
 	// OnTextDelta, if set and Stream is true, receives incremental output text
 	// for progress reporting. Partial text must never be published as final.
 	OnTextDelta func(string)
@@ -103,7 +117,11 @@ type GenerationResponse struct {
 	ModelID        string          `json:"model_id"`
 	RequestID      string          `json:"request_id,omitempty"`
 	Usage          Usage           `json:"usage"`
-	Raw            map[string]any  `json:"-"`
+	// ProviderItems holds the opaque dialect output items for this turn, to be
+	// recorded on the assistant Message and replayed on the next request. See
+	// Message.ProviderItems. Empty for dialects that do not use output items.
+	ProviderItems []json.RawMessage `json:"provider_items,omitempty"`
+	Raw           map[string]any    `json:"-"`
 }
 
 // ModelInfo is a discovered model from the provider's /models endpoint.

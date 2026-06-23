@@ -12,17 +12,18 @@ import (
 // --- request shapes ---
 
 type responsesRequest struct {
-	Model           string            `json:"model"`
-	Instructions    string            `json:"instructions,omitempty"`
-	Input           []map[string]any  `json:"input"`
-	Tools           []map[string]any  `json:"tools,omitempty"`
-	ToolChoice      any               `json:"tool_choice,omitempty"`
-	Text            map[string]any    `json:"text,omitempty"`
-	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
-	Reasoning       map[string]any    `json:"reasoning,omitempty"`
-	Stream          bool              `json:"stream,omitempty"`
-	Store           bool              `json:"store"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Model              string            `json:"model"`
+	Instructions       string            `json:"instructions,omitempty"`
+	Input              []map[string]any  `json:"input"`
+	Tools              []map[string]any  `json:"tools,omitempty"`
+	ToolChoice         any               `json:"tool_choice,omitempty"`
+	Text               map[string]any    `json:"text,omitempty"`
+	MaxOutputTokens    int               `json:"max_output_tokens,omitempty"`
+	Reasoning          map[string]any    `json:"reasoning,omitempty"`
+	Stream             bool              `json:"stream,omitempty"`
+	Store              bool              `json:"store"`
+	PreviousResponseID string            `json:"previous_response_id,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
 }
 
 func (c *Client) buildResponsesRequest(req provider.GenerationRequest) responsesRequest {
@@ -33,8 +34,14 @@ func (c *Client) buildResponsesRequest(req provider.GenerationRequest) responses
 		MaxOutputTokens: req.MaxOutputTokens,
 		Reasoning:       reasoningPayload(req.ReasoningEffort),
 		Stream:          req.Stream,
-		Store:           false, // Sakana does not support previous_response_id; we manage state locally.
-		Metadata:        req.Metadata,
+		// Stateless by default: we replay the prior output items locally so this
+		// works for Sakana (no previous_response_id) and privacy-sensitive use.
+		// StoreState opts into provider-side state for OpenAI.
+		Store:    req.StoreState,
+		Metadata: req.Metadata,
+	}
+	if req.StoreState && req.PreviousResponseID != "" {
+		rr.PreviousResponseID = req.PreviousResponseID
 	}
 	for _, t := range req.Tools {
 		rr.Tools = append(rr.Tools, map[string]any{
@@ -72,7 +79,19 @@ func translateInput(msgs []provider.Message) []map[string]any {
 				"output":  m.Content,
 			})
 		case provider.RoleAssistant:
-			if len(m.ToolCalls) > 0 {
+			switch {
+			case len(m.ProviderItems) > 0:
+				// Replay the provider's exact output items (reasoning items,
+				// function calls, messages) verbatim and in order. This is the
+				// canonical Responses continuation and preserves the ordering the
+				// API requires (a reasoning item immediately before the
+				// function_call it justifies).
+				for _, raw := range m.ProviderItems {
+					if item := rawObject(raw); item != nil {
+						out = append(out, item)
+					}
+				}
+			case len(m.ToolCalls) > 0:
 				for _, tc := range m.ToolCalls {
 					out = append(out, map[string]any{
 						"type":      "function_call",
@@ -84,7 +103,7 @@ func translateInput(msgs []provider.Message) []map[string]any {
 				if m.Content != "" {
 					out = append(out, message("assistant", m.Content))
 				}
-			} else {
+			default:
 				out = append(out, message("assistant", m.Content))
 			}
 		default:
@@ -96,6 +115,16 @@ func translateInput(msgs []provider.Message) []map[string]any {
 
 func message(role, content string) map[string]any {
 	return map[string]any{"role": role, "content": content}
+}
+
+// rawObject decodes a stored opaque output item into a generic object for replay
+// as a Responses input item. Returns nil if the item is not a JSON object.
+func rawObject(raw json.RawMessage) map[string]any {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
 }
 
 func translateToolChoice(tc provider.ToolChoice) any {
@@ -119,11 +148,11 @@ func translateToolChoice(tc provider.ToolChoice) any {
 // --- response shapes ---
 
 type responsesEnvelope struct {
-	ID     string          `json:"id"`
-	Model  string          `json:"model"`
-	Status string          `json:"status"`
-	Output []responsesItem `json:"output"`
-	Usage  responsesUsage  `json:"usage"`
+	ID     string            `json:"id"`
+	Model  string            `json:"model"`
+	Status string            `json:"status"`
+	Output []json.RawMessage `json:"output"`
+	Usage  responsesUsage    `json:"usage"`
 	Error  *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -137,17 +166,25 @@ type responsesItem struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Content   []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Refusal string `json:"refusal"`
 	} `json:"content"`
 }
 
+// responsesUsage tolerates both the legacy top-level orchestration token fields
+// and the current Sakana shape that nests them inside input_tokens_details /
+// output_tokens_details.
 type responsesUsage struct {
 	InputTokens        int `json:"input_tokens"`
 	OutputTokens       int `json:"output_tokens"`
 	InputTokensDetails struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens        int `json:"cached_tokens"`
+		OrchestrationTokens int `json:"orchestration_tokens"`
 	} `json:"input_tokens_details"`
+	OutputTokensDetails struct {
+		OrchestrationTokens int `json:"orchestration_tokens"`
+	} `json:"output_tokens_details"`
 	OrchestrationInputTokens  int `json:"orchestration_input_tokens"`
 	OrchestrationOutputTokens int `json:"orchestration_output_tokens"`
 }
@@ -166,7 +203,13 @@ func (c *Client) generateResponses(ctx context.Context, req provider.GenerationR
 				raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 				return classify(resp.StatusCode, string(raw), resp.Header)
 			}
-			env, serr := c.consumeResponsesStream(resp.Body, req.OnTextDelta)
+			var body io.Reader = resp.Body
+			if c.opts.StreamIdleTimeout > 0 {
+				ir := newIdleReader(resp.Body, c.opts.StreamIdleTimeout)
+				defer ir.Stop()
+				body = ir
+			}
+			env, serr := c.consumeResponsesStream(body, req.OnTextDelta)
 			if serr != nil {
 				return serr
 			}
@@ -242,31 +285,60 @@ func (c *Client) consumeResponsesStream(r io.Reader, onDelta func(string)) (*res
 
 func parseResponsesEnvelope(env *responsesEnvelope, req provider.GenerationRequest) provider.GenerationResponse {
 	var text string
+	var refusal string
 	var calls []provider.ToolCall
-	for _, item := range env.Output {
+	// Capture every output item verbatim so reasoning items (and anything else the
+	// dialect emits) survive the round trip and can be replayed on the next
+	// request. Order is preserved.
+	items := make([]json.RawMessage, 0, len(env.Output))
+	for _, raw := range env.Output {
+		items = append(items, raw)
+		var item responsesItem
+		if json.Unmarshal(raw, &item) != nil {
+			continue
+		}
 		switch item.Type {
 		case "message":
 			for _, ct := range item.Content {
-				if ct.Type == "output_text" || ct.Type == "text" {
+				switch ct.Type {
+				case "output_text", "text":
 					text += ct.Text
+				case "refusal":
+					refusal += ct.Refusal
 				}
 			}
 		case "function_call":
 			calls = append(calls, provider.ToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
 		}
 	}
+	finish := env.Status
+	if refusal != "" {
+		if text == "" {
+			text = refusal
+		}
+		finish = "refusal"
+	}
+	orchIn := env.Usage.InputTokensDetails.OrchestrationTokens
+	if orchIn == 0 {
+		orchIn = env.Usage.OrchestrationInputTokens
+	}
+	orchOut := env.Usage.OutputTokensDetails.OrchestrationTokens
+	if orchOut == 0 {
+		orchOut = env.Usage.OrchestrationOutputTokens
+	}
 	out := provider.GenerationResponse{
-		Text:         text,
-		ToolCalls:    calls,
-		ModelID:      env.Model,
-		RequestID:    env.ID,
-		FinishReason: env.Status,
+		Text:          text,
+		ToolCalls:     calls,
+		ProviderItems: items,
+		ModelID:       env.Model,
+		RequestID:     env.ID,
+		FinishReason:  finish,
 		Usage: provider.Usage{
 			InputTokens:         env.Usage.InputTokens,
 			CachedInputTokens:   env.Usage.InputTokensDetails.CachedTokens,
 			OutputTokens:        env.Usage.OutputTokens,
-			OrchestrationInput:  env.Usage.OrchestrationInputTokens,
-			OrchestrationOutput: env.Usage.OrchestrationOutputTokens,
+			OrchestrationInput:  orchIn,
+			OrchestrationOutput: orchOut,
 		},
 	}
 	if req.OutputSchema != nil && text != "" {

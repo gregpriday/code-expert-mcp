@@ -39,6 +39,12 @@ func cmdPlan(ctx context.Context, args []string, mode schema.PlanMode) int {
 	if err := fs.Parse(args); err != nil {
 		return exitInvalidArgs
 	}
+	if err := validateProfile(*profile); err != nil {
+		return fail(err)
+	}
+	if err := validateFormat(*format); err != nil {
+		return fail(err)
+	}
 
 	instructions, err := gatherInstructions(fs.Args(), *instrFile)
 	if err != nil {
@@ -92,6 +98,14 @@ func cmdReview(ctx context.Context, args []string) int {
 	noCache := fs.Bool("no-cache", false, "disable the cache for this run")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalidArgs
+	}
+	for _, v := range []error{
+		validateScope(*scope), validateProfile(*profile),
+		validateVerification(*verification), validateFormat(*format), validateFailOn(*failOn),
+	} {
+		if v != nil {
+			return fail(v)
+		}
 	}
 
 	instructions := strings.TrimSpace(strings.Join(fs.Args(), " "))

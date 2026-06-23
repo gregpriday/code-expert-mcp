@@ -2,13 +2,16 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/gregpriday/codeexpert/internal/app"
 	"github.com/gregpriday/codeexpert/internal/config"
+	"github.com/gregpriday/codeexpert/internal/provider"
 	"github.com/gregpriday/codeexpert/internal/repo"
 	"github.com/gregpriday/codeexpert/internal/repo/git"
 	"github.com/gregpriday/codeexpert/internal/schema"
@@ -37,10 +40,23 @@ func cmdDoctor(ctx context.Context, args []string) int {
 		return exitInvalidArgs
 	}
 	fmt.Println("✓ configuration valid")
+	fmt.Printf("  root: %s\n", a.Root)
+	if a.ProjectFile != "" {
+		fmt.Printf("  project config: %s\n", a.ProjectFile)
+	} else {
+		fmt.Println("  project config: none (using defaults + user config + env)")
+	}
 	if len(a.Sources) > 0 {
 		fmt.Printf("  sources: %s\n", strings.Join(a.Sources, ", "))
 	}
+	if a.Config.Version < 2 {
+		fmt.Println("  • config is version 1; run `codeexpert config migrate` to print a version-2 equivalent")
+	}
+	if a.Config.Provider.Active != "" {
+		fmt.Printf("  provider profile: %s\n", a.Config.Provider.Active)
+	}
 	fmt.Printf("  provider: %s (%s, dialect=%s)\n", a.Config.Provider.BaseURL, a.Config.Provider.Kind, a.Config.Provider.API)
+	fmt.Printf("  models: small=%s large=%s\n", a.Config.Models.Scout, a.Config.Models.Verifier)
 
 	if a.Config.Provider.APIKey != "" {
 		fmt.Printf("✓ API key present (from %s)\n", a.Config.Provider.APIKeyEnv)
@@ -62,38 +78,170 @@ func cmdDoctor(ctx context.Context, args []string) int {
 			fmt.Println("\n✗ cannot probe without an API key")
 			return exitProviderError
 		}
-		fmt.Println("\nProbing provider /models …")
-		models, perr := a.Provider.ListModels(ctx)
-		if perr != nil {
-			fmt.Printf("✗ provider probe failed: %s\n", schema.AsToolError(perr).Error())
-			return exitProviderError
-		}
-		fmt.Printf("✓ provider reachable; %d models available\n", len(models))
-		for i, m := range models {
-			if i >= 10 {
-				fmt.Printf("  … and %d more\n", len(models)-10)
-				break
-			}
-			fmt.Printf("  - %s\n", m.ID)
-		}
+		return runProbe(ctx, a.Provider, a.Config, os.Stdout)
 	}
 	return exitOK
 }
 
+// runProbe exercises the configured provider's capabilities and reports each as a
+// separate line: reachability, declared capabilities, small/large text
+// generation, a tool-call + tool-result continuation, and strict structured
+// output. It hard-fails only when the provider is unreachable or rejects the key;
+// individual unsupported capabilities are reported but not fatal.
+func runProbe(ctx context.Context, p provider.Provider, cfg config.Config, w io.Writer) int {
+	fmt.Fprintln(w, "\nProbing provider capabilities …")
+	caps := p.Capabilities(ctx)
+	fmt.Fprintf(w, "  dialect: %s (tools=%v, structured=%v, streaming=%v, reasoning=%v)\n",
+		caps.Dialect, caps.SupportsTools, caps.SupportsStructured, caps.SupportsStreaming, caps.SupportsReasoning)
+
+	models, perr := p.ListModels(ctx)
+	if perr != nil {
+		fmt.Fprintf(w, "  ✗ provider unreachable: %s\n", schema.AsToolError(perr).Error())
+		return exitProviderError
+	}
+	fmt.Fprintf(w, "  ✓ reachable (%d models listed)\n", len(models))
+
+	// Probe the same resolved role models the engine actually runs (scout = small
+	// tier, verifier = large tier) so the probe reflects real behavior, including
+	// any CODEEXPERT_MODELS_* env overrides.
+	small := cfg.Models.Scout
+	large := cfg.Models.Verifier
+	authFailed := false
+	note := func(err error) {
+		if err != nil && schema.AsToolError(err).Code == schema.CodeProviderAuth {
+			authFailed = true
+		}
+	}
+	note(probeText(ctx, p, w, "small-text", small))
+	if large != small {
+		note(probeText(ctx, p, w, "large-text", large))
+	}
+	if caps.SupportsTools {
+		note(probeToolCall(ctx, p, w, small))
+	}
+	if caps.SupportsStructured {
+		note(probeStructured(ctx, p, w, small))
+	}
+	if authFailed {
+		fmt.Fprintln(w, "  ✗ provider rejected the API key")
+		return exitProviderError
+	}
+	return exitOK
+}
+
+func probeText(ctx context.Context, p provider.Provider, w io.Writer, label, model string) error {
+	if model == "" {
+		fmt.Fprintf(w, "  • %s: no model configured\n", label)
+		return nil
+	}
+	resp, err := p.Generate(ctx, provider.GenerationRequest{
+		Model:           model,
+		Input:           []provider.Message{{Role: provider.RoleUser, Content: "Reply with the single word: ok"}},
+		MaxOutputTokens: 16,
+	})
+	if err != nil {
+		fmt.Fprintf(w, "  ✗ %s (%s): %s\n", label, model, schema.AsToolError(err).Error())
+		return err
+	}
+	fmt.Fprintf(w, "  ✓ %s (%s, %d in / %d out)\n", label, model, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	return nil
+}
+
+func probeToolCall(ctx context.Context, p provider.Provider, w io.Writer, model string) error {
+	if model == "" {
+		fmt.Fprintln(w, "  • tool-call: no model configured")
+		return nil
+	}
+	tool := provider.FunctionTool{
+		Name:        "ping",
+		Description: "Returns pong. Call this tool.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+	}
+	resp, err := p.Generate(ctx, provider.GenerationRequest{
+		Model:           model,
+		Input:           []provider.Message{{Role: provider.RoleUser, Content: "Call the ping tool now."}},
+		Tools:           []provider.FunctionTool{tool},
+		ToolChoice:      provider.ToolChoice{Mode: provider.ToolChoiceRequired},
+		MaxOutputTokens: 64,
+	})
+	if err != nil {
+		fmt.Fprintf(w, "  ✗ tool-call (%s): %s\n", model, schema.AsToolError(err).Error())
+		return err
+	}
+	if len(resp.ToolCalls) == 0 {
+		fmt.Fprintf(w, "  • tool-call (%s): model did not request the tool\n", model)
+		return nil
+	}
+	// Continuation: feed the tool result back, replaying provider items.
+	call := resp.ToolCalls[0]
+	_, cerr := p.Generate(ctx, provider.GenerationRequest{
+		Model: model,
+		Input: []provider.Message{
+			{Role: provider.RoleUser, Content: "Call the ping tool now."},
+			{Role: provider.RoleAssistant, Content: resp.Text, ToolCalls: resp.ToolCalls, ProviderItems: resp.ProviderItems},
+			{Role: provider.RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "pong"},
+		},
+		MaxOutputTokens: 16,
+	})
+	if cerr != nil {
+		fmt.Fprintf(w, "  ✗ tool-call continuation (%s): %s\n", model, schema.AsToolError(cerr).Error())
+		return cerr
+	}
+	fmt.Fprintf(w, "  ✓ tool-call + continuation (%s)\n", model)
+	return nil
+}
+
+func probeStructured(ctx context.Context, p provider.Provider, w io.Writer, model string) error {
+	if model == "" {
+		fmt.Fprintln(w, "  • structured: no model configured")
+		return nil
+	}
+	schemaJSON := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}`)
+	resp, err := p.Generate(ctx, provider.GenerationRequest{
+		Model:           model,
+		Input:           []provider.Message{{Role: provider.RoleUser, Content: `Return {"ok": true} as JSON.`}},
+		OutputSchema:    &provider.JSONSchema{Name: "probe", Schema: schemaJSON, Strict: true},
+		MaxOutputTokens: 64,
+	})
+	if err != nil {
+		fmt.Fprintf(w, "  ✗ structured (%s): %s\n", model, schema.AsToolError(err).Error())
+		return err
+	}
+	body := resp.StructuredJSON
+	if len(body) == 0 {
+		body = []byte(resp.Text)
+	}
+	var probe struct {
+		OK bool `json:"ok"`
+	}
+	if json.Unmarshal(body, &probe) != nil {
+		fmt.Fprintf(w, "  • structured (%s): response was not valid JSON for the schema\n", model)
+		return nil
+	}
+	fmt.Fprintf(w, "  ✓ structured (%s)\n", model)
+	return nil
+}
+
 func cmdConfig(ctx context.Context, args []string) int {
-	if len(args) == 0 || args[0] != "print" {
-		fmt.Fprintln(os.Stderr, "usage: codeexpert config print [--root DIR]")
+	if len(args) == 0 || (args[0] != "print" && args[0] != "migrate") {
+		fmt.Fprintln(os.Stderr, "usage: codeexpert config print|migrate [--root DIR]")
 		return exitInvalidArgs
 	}
-	fs := flag.NewFlagSet("config print", flag.ContinueOnError)
+	sub := args[0]
+	fs := flag.NewFlagSet("config "+sub, flag.ContinueOnError)
 	root := fs.String("root", "", "repository root")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitInvalidArgs
 	}
-	lr, err := config.Load(*root)
+	lr, err := config.Load(repo.DefaultRoot(*root))
 	if err != nil {
 		return fail(err)
 	}
+
+	if sub == "migrate" {
+		return printMigratedConfig(lr.Config)
+	}
+
 	if verr := config.Validate(&lr.Config); verr != nil {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", schema.AsToolError(verr).Error())
 	}
@@ -101,6 +249,23 @@ func cmdConfig(ctx context.Context, args []string) int {
 		fmt.Printf("# sources: %s\n\n", strings.Join(lr.SourcesNoted, ", "))
 	}
 	fmt.Print(lr.Config.String())
+	return exitOK
+}
+
+// printMigratedConfig renders a faithful version-2 .codeexpert.toml derived from
+// the loaded config, preserving every section (timeouts, cache, review, checks,
+// localhost opt-ins, …). Secrets are never emitted — only api_key_env names.
+// It is idempotent: an already-version-2 config re-renders to an equivalent file.
+func printMigratedConfig(src config.Config) int {
+	v2 := config.InferV2FromV1(src)
+	out, err := config.RenderTOML(v2)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Println("# Migrated to config version 2. Review, then save as .codeexpert.toml.")
+	fmt.Println("# Secrets are not included; only api_key_env names. Set keys via the environment.")
+	fmt.Println()
+	fmt.Print(out)
 	return exitOK
 }
 

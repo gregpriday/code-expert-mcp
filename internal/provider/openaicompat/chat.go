@@ -10,14 +10,16 @@ import (
 )
 
 type chatRequest struct {
-	Model          string            `json:"model"`
-	Messages       []map[string]any  `json:"messages"`
-	Tools          []map[string]any  `json:"tools,omitempty"`
-	ToolChoice     any               `json:"tool_choice,omitempty"`
-	ResponseFormat map[string]any    `json:"response_format,omitempty"`
-	MaxTokens      int               `json:"max_completion_tokens,omitempty"`
-	Stream         bool              `json:"stream,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
+	Model           string            `json:"model"`
+	Messages        []map[string]any  `json:"messages"`
+	Tools           []map[string]any  `json:"tools,omitempty"`
+	ToolChoice      any               `json:"tool_choice,omitempty"`
+	ResponseFormat  map[string]any    `json:"response_format,omitempty"`
+	MaxTokens       int               `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	Stream          bool              `json:"stream,omitempty"`
+	StreamOptions   map[string]any    `json:"stream_options,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 func (c *Client) buildChatRequest(req provider.GenerationRequest) chatRequest {
@@ -58,11 +60,17 @@ func (c *Client) buildChatRequest(req provider.GenerationRequest) chatRequest {
 		}
 	}
 	cr := chatRequest{
-		Model:     req.Model,
-		Messages:  msgs,
-		MaxTokens: req.MaxOutputTokens,
-		Stream:    req.Stream,
-		Metadata:  req.Metadata,
+		Model:           req.Model,
+		Messages:        msgs,
+		MaxTokens:       req.MaxOutputTokens,
+		ReasoningEffort: req.ReasoningEffort,
+		Stream:          req.Stream,
+		Metadata:        req.Metadata,
+	}
+	if req.Stream {
+		// Ask the server to emit a final usage-only chunk so streaming runs are
+		// still accounted for.
+		cr.StreamOptions = map[string]any{"include_usage": true}
 	}
 	for _, t := range req.Tools {
 		cr.Tools = append(cr.Tools, map[string]any{
@@ -147,7 +155,13 @@ func (c *Client) generateChat(ctx context.Context, req provider.GenerationReques
 				raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 				return classify(resp.StatusCode, string(raw), resp.Header)
 			}
-			r, serr := c.consumeChatStream(resp.Body, req)
+			var body io.Reader = resp.Body
+			if c.opts.StreamIdleTimeout > 0 {
+				ir := newIdleReader(resp.Body, c.opts.StreamIdleTimeout)
+				defer ir.Stop()
+				body = ir
+			}
+			r, serr := c.consumeChatStream(body, req)
 			if serr != nil {
 				return serr
 			}
@@ -206,6 +220,8 @@ func (c *Client) consumeChatStream(r io.Reader, req provider.GenerationRequest) 
 		model    string
 		id       string
 		finish   string
+		usage    chatUsage
+		hasUsage bool
 		toolAcc  = map[int]*provider.ToolCall{}
 		toolKeys []int
 	)
@@ -231,9 +247,14 @@ func (c *Client) consumeChatStream(r io.Reader, req provider.GenerationRequest) 
 					} `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
+			Usage *chatUsage `json:"usage"`
 		}
 		if json.Unmarshal([]byte(data), &chunk) != nil {
 			return true
+		}
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+			hasUsage = true
 		}
 		if chunk.Model != "" {
 			model = chunk.Model
@@ -273,6 +294,13 @@ func (c *Client) consumeChatStream(r io.Reader, req provider.GenerationRequest) 
 		return provider.GenerationResponse{}, schema.NewError(schema.CodeProviderTimeout, "stream read error: %v", err)
 	}
 	out := provider.GenerationResponse{Text: text, ModelID: model, RequestID: id, FinishReason: finish}
+	if hasUsage {
+		out.Usage = provider.Usage{
+			InputTokens:       usage.PromptTokens,
+			CachedInputTokens: usage.PromptTokensDetails.CachedTokens,
+			OutputTokens:      usage.CompletionTokens,
+		}
+	}
 	for _, k := range toolKeys {
 		out.ToolCalls = append(out.ToolCalls, *toolAcc[k])
 	}

@@ -4,10 +4,19 @@
 // of the environment variable holding a key is configured.
 package config
 
-// SupportedVersion is the only config schema version this build understands.
-const SupportedVersion = 1
+// SupportedVersion is the newest config schema version this build understands.
+// Version 1 (flat [provider] + role-based [models]) is still accepted and is
+// migrated in memory to the version-2 representation; see migrate.go.
+const SupportedVersion = 2
 
 // Config is the fully-resolved configuration for a process.
+//
+// Version 2 introduces named provider profiles ([providers.NAME] selected by
+// [provider].active), two model tiers (small_model/large_model), per-stage
+// [routing], and per-tier [reasoning]. These are *inputs*: Load collapses them
+// into the flat Provider/Models fields, which remain the single source of truth
+// the engine reads. A version-1 file leaves the v2 fields empty and is used
+// directly.
 type Config struct {
 	Version    int              `toml:"version"`
 	Server     ServerConfig     `toml:"server"`
@@ -20,6 +29,11 @@ type Config struct {
 	Plan       PlanConfig       `toml:"plan"`
 	Review     ReviewConfig     `toml:"review"`
 	Checks     ChecksConfig     `toml:"checks"`
+
+	// Version-2 inputs (collapsed into Provider/Models by Load).
+	Providers map[string]ProviderProfile `toml:"providers"`
+	Routing   RoutingConfig              `toml:"routing"`
+	Reasoning ReasoningConfig            `toml:"reasoning"`
 }
 
 // ServerConfig controls the MCP/HTTP server runtime.
@@ -37,12 +51,18 @@ type ServerConfig struct {
 	AuthTokenEnv   string   `toml:"auth_token_env"`
 }
 
-// ProviderConfig configures the OpenAI-compatible model provider.
+// ProviderConfig configures the OpenAI-compatible model provider. In version 2
+// the active profile (Active) selects one of Config.Providers and is collapsed
+// into these fields at load time.
 type ProviderConfig struct {
+	// Active names the [providers.NAME] profile to use (version 2). Empty for
+	// version-1 configs, which set the flat fields directly.
+	Active                     string   `toml:"active"`
 	Kind                       string   `toml:"kind"`
 	API                        string   `toml:"api"` // responses | chat-completions
 	BaseURL                    string   `toml:"base_url"`
 	APIKeyEnv                  string   `toml:"api_key_env"`
+	StateMode                  string   `toml:"state_mode"` // stateless | manual-replay | stateful
 	ConnectTimeout             Duration `toml:"connect_timeout"`
 	RequestTimeout             Duration `toml:"request_timeout"`
 	StreamIdleTimeout          Duration `toml:"stream_idle_timeout"`
@@ -52,8 +72,75 @@ type ProviderConfig struct {
 	APIKey string `toml:"-"`
 }
 
-// ModelsConfig maps roles to model IDs and reasoning effort levels.
+// ProviderProfile is one named, switchable provider definition ([providers.NAME]
+// in version-2 configs). The profile name is the TOML table key. Secrets are
+// never stored here; only the name of the API-key environment variable.
+type ProviderProfile struct {
+	Preset                     string   `toml:"preset"` // openai | sakana | generic (documentation only)
+	Kind                       string   `toml:"kind"`
+	API                        string   `toml:"api"` // responses | chat-completions
+	BaseURL                    string   `toml:"base_url"`
+	APIKeyEnv                  string   `toml:"api_key_env"`
+	SmallModel                 string   `toml:"small_model"`
+	LargeModel                 string   `toml:"large_model"`
+	StateMode                  string   `toml:"state_mode"`
+	ConnectTimeout             Duration `toml:"connect_timeout"`
+	RequestTimeout             Duration `toml:"request_timeout"`
+	StreamIdleTimeout          Duration `toml:"stream_idle_timeout"`
+	MaxRetries                 int      `toml:"max_retries"`
+	AllowInsecureHTTPLocalhost bool     `toml:"allow_insecure_http_localhost"`
+}
+
+// RoutingConfig maps each pipeline stage to a model tier ("small" | "large").
+// Empty stages fall back to the engine's profile/complexity escalation.
+type RoutingConfig struct {
+	Exploration      string `toml:"exploration"`
+	QueryExpansion   string `toml:"query_expansion"`
+	Summary          string `toml:"summary"`
+	ReviewCandidates string `toml:"review_candidates"`
+	PlanFinal        string `toml:"plan_final"`
+	HelpFinal        string `toml:"help_final"`
+	ReviewVerify     string `toml:"review_verify"`
+	ReviewFinal      string `toml:"review_final"`
+}
+
+// For returns the configured tier for a pipeline stage, or "" if unset.
+func (r RoutingConfig) For(stage string) string {
+	switch stage {
+	case "exploration":
+		return r.Exploration
+	case "query_expansion":
+		return r.QueryExpansion
+	case "summary":
+		return r.Summary
+	case "review_candidates":
+		return r.ReviewCandidates
+	case "plan_final":
+		return r.PlanFinal
+	case "help_final":
+		return r.HelpFinal
+	case "review_verify":
+		return r.ReviewVerify
+	case "review_final":
+		return r.ReviewFinal
+	}
+	return ""
+}
+
+// ReasoningConfig sets the reasoning effort for each model tier (version 2).
+type ReasoningConfig struct {
+	Small string `toml:"small"`
+	Large string `toml:"large"`
+}
+
+// ModelsConfig maps roles to model IDs and reasoning effort levels. Version 2
+// configs typically set only SmallModel/LargeModel (via a provider profile) plus
+// [reasoning]; Load fills the role fields from those tiers when they are empty.
 type ModelsConfig struct {
+	// SmallModel and LargeModel are the two version-2 model tiers. They seed the
+	// role fields below when those are unset.
+	SmallModel        string `toml:"small_model"`
+	LargeModel        string `toml:"large_model"`
 	Scout             string `toml:"scout"`
 	Planner           string `toml:"planner"`
 	Reviewer          string `toml:"reviewer"`
