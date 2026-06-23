@@ -343,6 +343,75 @@ large_model = "fugu-ultra"
 	}
 }
 
+// TestEmbeddingsSecretsNeverSerialized proves the separate embeddings API key is
+// resolved from its env var and that the redacted String() view exposes only its
+// presence and env-var name — never the secret value.
+func TestEmbeddingsSecretsNeverSerialized(t *testing.T) {
+	t.Setenv("EMBEDDINGS_API_KEY", "sk-embed-secret-value-5678")
+	cfg, err := LoadFile(writeTOML(t, `
+version = 2
+[provider]
+active = "sakana"
+[providers.sakana]
+api = "responses"
+base_url = "https://api.sakana.ai/v1"
+small_model = "fugu"
+large_model = "fugu-ultra"
+[embeddings]
+enabled = true
+provider = "openai-compatible"
+model = "text-embedding-3-small"
+api_key_env = "EMBEDDINGS_API_KEY"
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Embeddings.APIKey != "sk-embed-secret-value-5678" {
+		t.Fatalf("embeddings key not resolved from env: got %q", cfg.Embeddings.APIKey)
+	}
+	out := cfg.String()
+	if strings.Contains(out, "sk-embed-secret-value-5678") {
+		t.Errorf("String() leaked the embeddings API key:\n%s", out)
+	}
+	if !strings.Contains(out, "EMBEDDINGS_API_KEY") {
+		t.Errorf("String() should reference the embeddings env-var name")
+	}
+	if !strings.Contains(out, "api_key_present = true") {
+		t.Errorf("String() should report the embeddings key as present:\n%s", out)
+	}
+}
+
+// TestEmbeddingsAPIKeyEnvOverride proves CODEEXPERT_EMBEDDINGS_API_KEY_ENV
+// overrides the configured env-var name before secret resolution, mirroring the
+// provider override.
+func TestEmbeddingsAPIKeyEnvOverride(t *testing.T) {
+	t.Setenv("CODEEXPERT_EMBEDDINGS_API_KEY_ENV", "OVERRIDE_EMBEDDINGS_KEY")
+	t.Setenv("OVERRIDE_EMBEDDINGS_KEY", "sk-embed-from-override")
+	cfg, err := LoadFile(writeTOML(t, `
+version = 2
+[provider]
+active = "sakana"
+[providers.sakana]
+api = "responses"
+base_url = "https://api.sakana.ai/v1"
+small_model = "fugu"
+large_model = "fugu-ultra"
+[embeddings]
+enabled = true
+provider = "openai-compatible"
+model = "text-embedding-3-small"
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Embeddings.APIKeyEnv != "OVERRIDE_EMBEDDINGS_KEY" {
+		t.Fatalf("override did not set api_key_env: got %q", cfg.Embeddings.APIKeyEnv)
+	}
+	if cfg.Embeddings.APIKey != "sk-embed-from-override" {
+		t.Fatalf("embeddings key not resolved from overridden env: got %q", cfg.Embeddings.APIKey)
+	}
+}
+
 // TestMigrateRoundTripsAndValidates proves `config migrate` produces a valid,
 // loadable v2 config that preserves provider details — including a loopback http
 // base URL with its allow_insecure_http_localhost opt-in and custom role models.

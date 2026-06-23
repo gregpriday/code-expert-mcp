@@ -80,6 +80,9 @@ func resolveSecrets(cfg *Config) {
 	if cfg.Server.AuthTokenEnv != "" {
 		cfg.Server.AuthToken = os.Getenv(cfg.Server.AuthTokenEnv)
 	}
+	if cfg.Embeddings.APIKeyEnv != "" {
+		cfg.Embeddings.APIKey = os.Getenv(cfg.Embeddings.APIKeyEnv)
+	}
 }
 
 // applyEnvOverrides applies the CODEEXPERT_* environment overrides that are most
@@ -96,6 +99,7 @@ func applyEnvOverrides(cfg *Config) {
 	set("CODEEXPERT_PROVIDER_BASE_URL", func(v string) { cfg.Provider.BaseURL = v })
 	set("CODEEXPERT_PROVIDER_API", func(v string) { cfg.Provider.API = v })
 	set("CODEEXPERT_PROVIDER_API_KEY_ENV", func(v string) { cfg.Provider.APIKeyEnv = v })
+	set("CODEEXPERT_EMBEDDINGS_API_KEY_ENV", func(v string) { cfg.Embeddings.APIKeyEnv = v })
 	set("CODEEXPERT_MODELS_SCOUT", func(v string) { cfg.Models.Scout = v })
 	set("CODEEXPERT_MODELS_PLANNER", func(v string) { cfg.Models.Planner = v })
 	set("CODEEXPERT_MODELS_REVIEWER", func(v string) { cfg.Models.Reviewer = v })
@@ -144,6 +148,9 @@ func (c Config) String() string {
 		c.Models.Scout, c.Models.Verifier, c.Models.Planner, c.Models.Reviewer, c.Models.MaxOutputTokens)
 	fmt.Fprintf(&b, "[retrieval]\nlexical = %v\nsymbols = %v\nsummaries = %q\nembeddings = %v\nmax_files_per_run = %d\nmax_context_tokens = %d\n\n",
 		c.Retrieval.Lexical, c.Retrieval.Symbols, c.Retrieval.Summaries, c.Retrieval.Embeddings, c.Retrieval.MaxFilesPerRun, c.Retrieval.MaxContextTokens)
+	embKeyPresent := c.Embeddings.APIKey != ""
+	fmt.Fprintf(&b, "[embeddings]\nenabled = %v\nprovider = %q\nmodel = %q\nbase_url = %q\napi_key_env = %q\napi_key_present = %v\nchunk_tokens = %d\noverlap_tokens = %d\nmax_chunks = %d\n\n",
+		c.Embeddings.Enabled, c.Embeddings.Provider, c.Embeddings.Model, c.Embeddings.BaseURL, c.Embeddings.APIKeyEnv, embKeyPresent, c.Embeddings.ChunkTokens, c.Embeddings.OverlapTokens, c.Embeddings.MaxChunks)
 	fmt.Fprintf(&b, "[cache]\nenabled = %v\nmax_size_gb = %g\nttl = %q\n\n",
 		c.Cache.Enabled, c.Cache.MaxSizeGB, c.Cache.TTL.Std().String())
 	fmt.Fprintf(&b, "[review]\ndefault_profile = %q\npasses = %v\nmax_blocking_findings = %d\nmax_total_findings = %d\n\n",
