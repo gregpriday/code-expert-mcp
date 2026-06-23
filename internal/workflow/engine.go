@@ -145,6 +145,9 @@ func (s *Session) RunToolLoop(ctx context.Context, maxRounds int) error {
 			}
 			return err
 		}
+		if resp.FinishReason == "incomplete" && s.eng.Log != nil {
+			s.eng.Log.Warn("model response truncated (incomplete) during exploration; consider raising models.max_output_tokens")
+		}
 		// Record the assistant turn (text, tool calls, and the opaque provider
 		// output items so reasoning continuity survives into the next round).
 		s.messages = append(s.messages, provider.Message{
@@ -192,6 +195,10 @@ func (s *Session) Synthesize(ctx context.Context, instruction string, out *provi
 	}
 	clean := extractJSON(body)
 	if len(clean) == 0 {
+		if resp.FinishReason == "incomplete" {
+			return nil, schema.NewError(schema.CodeOutputInvalid,
+				"model output was truncated (status: incomplete) before returning JSON; raise models.max_output_tokens")
+		}
 		return nil, schema.NewError(schema.CodeOutputInvalid, "model returned no JSON object")
 	}
 	// Keep the assistant turn so a repair call has the prior attempt in context,

@@ -29,6 +29,33 @@ func TestValidateRejectsInsecureRemoteHTTP(t *testing.T) {
 	}
 }
 
+// TestValidateRemoteHTTPRejectedEvenWithOptIn proves the loopback opt-in cannot
+// widen the trust boundary to a remote host (P0-12), including a hostname that
+// merely starts with "127.".
+func TestValidateRemoteHTTPRejectedEvenWithOptIn(t *testing.T) {
+	for _, host := range []string{"http://example.com/v1", "http://127.example.com/v1", "http://127.0.0.1.evil.com/v1"} {
+		c := Defaults()
+		c.Provider.BaseURL = host
+		c.Provider.AllowInsecureHTTPLocalhost = true // must NOT allow a remote http host
+		if err := Validate(&c); err == nil {
+			t.Errorf("expected rejection of insecure http for %q even with opt-in", host)
+		}
+	}
+}
+
+// TestValidateAcceptsLoopbackHTTPWithOptIn proves real loopback http is permitted
+// with the explicit opt-in.
+func TestValidateAcceptsLoopbackHTTPWithOptIn(t *testing.T) {
+	for _, host := range []string{"http://127.0.0.1:1234/v1", "http://localhost:1234/v1", "http://[::1]:1234/v1"} {
+		c := Defaults()
+		c.Provider.BaseURL = host
+		c.Provider.AllowInsecureHTTPLocalhost = true
+		if err := Validate(&c); err != nil {
+			t.Errorf("loopback http with opt-in should validate (%s): %v", host, err)
+		}
+	}
+}
+
 func TestValidateRejectsUnsupportedVersion(t *testing.T) {
 	c := Defaults()
 	c.Version = 99

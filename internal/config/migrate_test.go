@@ -188,6 +188,15 @@ api = "responses"
 base_url = "https://api.sakana.ai/v1"
 api_key_env = "SAKANA_API_KEY"
 `,
+		"profiles defined but no active": `
+version = 2
+[providers.openai]
+api = "responses"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+small_model = "s"
+large_model = "l"
+`,
 		"profile bad api": `
 version = 2
 [provider]
@@ -380,6 +389,48 @@ max_total_findings = 5
 	}
 	if reparsed.Review.MaxTotalFindings != 5 {
 		t.Errorf("unrelated section dropped: review.max_total_findings = %d", reparsed.Review.MaxTotalFindings)
+	}
+}
+
+// TestMigrateV2IsIdempotent proves migrating an already-version-2 config keeps
+// every configured profile (not just the active one) and the active selection.
+func TestMigrateV2IsIdempotent(t *testing.T) {
+	src, err := LoadFile(writeTOML(t, `
+version = 2
+[provider]
+active = "openai"
+[providers.openai]
+api = "responses"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+small_model = "o-small"
+large_model = "o-large"
+[providers.sakana]
+api = "responses"
+base_url = "https://api.sakana.ai/v1"
+api_key_env = "SAKANA_API_KEY"
+small_model = "fugu"
+large_model = "fugu-ultra"
+`))
+	if err != nil {
+		t.Fatalf("load v2: %v", err)
+	}
+	out, err := RenderTOML(InferV2FromV1(src))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	reparsed, err := LoadFile(writeTOML(t, out))
+	if err != nil {
+		t.Fatalf("re-migrated config did not parse:\n%s\nerr: %v", out, err)
+	}
+	if verr := Validate(&reparsed); verr != nil {
+		t.Fatalf("re-migrated config did not validate: %v\n%s", verr, out)
+	}
+	if len(reparsed.Providers) != 2 {
+		t.Errorf("migration dropped profiles: have %d, want 2", len(reparsed.Providers))
+	}
+	if reparsed.Provider.Active != "openai" || reparsed.Provider.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("active profile not preserved: active=%q base=%q", reparsed.Provider.Active, reparsed.Provider.BaseURL)
 	}
 }
 

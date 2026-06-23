@@ -10,16 +10,15 @@ import (
 )
 
 type chatRequest struct {
-	Model           string            `json:"model"`
-	Messages        []map[string]any  `json:"messages"`
-	Tools           []map[string]any  `json:"tools,omitempty"`
-	ToolChoice      any               `json:"tool_choice,omitempty"`
-	ResponseFormat  map[string]any    `json:"response_format,omitempty"`
-	MaxTokens       int               `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
-	Stream          bool              `json:"stream,omitempty"`
-	StreamOptions   map[string]any    `json:"stream_options,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Model          string            `json:"model"`
+	Messages       []map[string]any  `json:"messages"`
+	Tools          []map[string]any  `json:"tools,omitempty"`
+	ToolChoice     any               `json:"tool_choice,omitempty"`
+	ResponseFormat map[string]any    `json:"response_format,omitempty"`
+	MaxTokens      int               `json:"max_completion_tokens,omitempty"`
+	Stream         bool              `json:"stream,omitempty"`
+	StreamOptions  map[string]any    `json:"stream_options,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
 func (c *Client) buildChatRequest(req provider.GenerationRequest) chatRequest {
@@ -60,13 +59,15 @@ func (c *Client) buildChatRequest(req provider.GenerationRequest) chatRequest {
 		}
 	}
 	cr := chatRequest{
-		Model:           req.Model,
-		Messages:        msgs,
-		MaxTokens:       req.MaxOutputTokens,
-		ReasoningEffort: req.ReasoningEffort,
-		Stream:          req.Stream,
-		Metadata:        req.Metadata,
+		Model:     req.Model,
+		Messages:  msgs,
+		MaxTokens: req.MaxOutputTokens,
+		Stream:    req.Stream,
+		Metadata:  req.Metadata,
 	}
+	// Reasoning effort is intentionally NOT forwarded on chat-completions: it is
+	// the fallback dialect for endpoints that often reject the unknown parameter.
+	// Use the Responses dialect (the default) for reasoning models.
 	if req.Stream {
 		// Ask the server to emit a final usage-only chunk so streaming runs are
 		// still accounted for.

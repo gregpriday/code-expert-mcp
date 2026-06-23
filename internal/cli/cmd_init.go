@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -137,7 +138,7 @@ func renderV2Template(p presetDefaults, api string, comments bool) string {
 	fmt.Fprintf(&b, "base_url = %q\napi_key_env = %q\n", p.baseURL, p.apiKeyEnv)
 	c("# small_model handles exploration and recall-heavy passes; large_model handles\n# final synthesis and verification.\n")
 	fmt.Fprintf(&b, "small_model = %q\nlarge_model = %q\n", p.small, p.large)
-	c("# state_mode: stateless (manual replay; private) | manual-replay | stateful (OpenAI previous_response_id).\n")
+	c("# state_mode: stateless | manual-replay (both replay context locally; the\n# current behavior). \"stateful\" (OpenAI previous_response_id) is reserved and\n# not yet active — runs stay stateless regardless.\n")
 	fmt.Fprintf(&b, "state_mode = %q\n", p.stateMode)
 	if p.allowInsecure {
 		c("# Required because base_url uses http on a loopback host.\n")
@@ -167,11 +168,18 @@ func orElse(v, fallback string) string {
 
 // isInsecureLoopback reports whether a base URL uses http on a loopback host,
 // which requires the explicit allow_insecure_http_localhost opt-in to validate.
+// IPs are parsed so a remote hostname like "127.example.com" is not misclassified.
 func isInsecureLoopback(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Scheme != "http" {
 		return false
 	}
 	h := u.Hostname()
-	return h == "localhost" || h == "::1" || strings.HasPrefix(h, "127.")
+	if h == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

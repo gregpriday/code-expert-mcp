@@ -14,7 +14,7 @@ import (
 	"github.com/gregpriday/codeexpert/internal/schema"
 )
 
-func TestChatForwardsReasoningEffortAndStreamUsage(t *testing.T) {
+func TestChatStreamOptionsAndNoReasoning(t *testing.T) {
 	c, err := New(Options{BaseURL: "https://example.com/v1", Dialect: "chat-completions"})
 	if err != nil {
 		t.Fatal(err)
@@ -25,11 +25,13 @@ func TestChatForwardsReasoningEffortAndStreamUsage(t *testing.T) {
 	})
 	b, _ := json.Marshal(cr)
 	s := string(b)
-	if !strings.Contains(s, `"reasoning_effort":"high"`) {
-		t.Errorf("chat request missing reasoning_effort: %s", s)
-	}
 	if !strings.Contains(s, `"stream_options":{"include_usage":true}`) {
 		t.Errorf("chat request missing stream_options.include_usage: %s", s)
+	}
+	// reasoning_effort must NOT be forwarded on chat (fallback dialect; generic
+	// endpoints reject the unknown parameter).
+	if strings.Contains(s, "reasoning_effort") {
+		t.Errorf("chat request should not forward reasoning_effort: %s", s)
 	}
 
 	// Non-streaming requests must not carry stream_options.

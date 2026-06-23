@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"net/url"
 	"strings"
 
@@ -144,12 +145,18 @@ func Validate(c *Config) error {
 	return nil
 }
 
+// isLoopbackHost reports whether host is the loopback. It parses IPs so a remote
+// hostname that merely starts with "127." (e.g. "127.example.com") is NOT treated
+// as loopback.
 func isLoopbackHost(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "[::1]":
+	if host == "localhost" {
 		return true
 	}
-	return strings.HasPrefix(host, "127.")
+	host = strings.Trim(host, "[]")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // validateProfiles checks the version-2 [providers.NAME] table and that the
@@ -179,6 +186,10 @@ func validateProfiles(c *Config) error {
 			return err
 		}
 	}
+	if len(c.Providers) > 0 && c.Provider.Active == "" {
+		return schema.NewError(schema.CodeConfigInvalid,
+			"provider.active is required when [providers.NAME] profiles are defined (or set CODEEXPERT_PROVIDER_PROFILE)")
+	}
 	if c.Provider.Active != "" {
 		if _, ok := c.Providers[c.Provider.Active]; !ok {
 			return schema.NewError(schema.CodeConfigInvalid,
@@ -198,13 +209,21 @@ func validateBaseURL(label, baseURL string, allowInsecure bool) error {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return schema.NewError(schema.CodeConfigInvalid, "%s.base_url %q is not a valid URL", label, baseURL)
 	}
-	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) && !allowInsecure {
-		return schema.NewError(schema.CodeConfigInvalid,
-			"%s.base_url uses insecure http for a non-local host; set allow_insecure_http_localhost only for localhost", label)
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return schema.NewError(schema.CodeConfigInvalid, "%s.base_url scheme %q must be http or https", label, u.Scheme)
 	}
-	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) && !allowInsecure {
-		return schema.NewError(schema.CodeConfigInvalid,
-			"%s.base_url uses http on localhost; set allow_insecure_http_localhost = true to permit it", label)
+	if u.Scheme == "http" {
+		// Insecure http is permitted only for a loopback host, and only with the
+		// explicit opt-in. A remote http endpoint is rejected regardless of the
+		// flag, so allow_insecure_http_localhost cannot widen the trust boundary.
+		if !isLoopbackHost(u.Hostname()) {
+			return schema.NewError(schema.CodeConfigInvalid,
+				"%s.base_url uses insecure http for a non-loopback host; use https", label)
+		}
+		if !allowInsecure {
+			return schema.NewError(schema.CodeConfigInvalid,
+				"%s.base_url uses http on a loopback host; set allow_insecure_http_localhost = true to permit it", label)
+		}
 	}
 	return nil
 }

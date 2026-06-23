@@ -134,24 +134,30 @@ func InferV2FromV1(in Config) Config {
 	out := in
 	out.Version = 2
 
-	name := profileNameFor(in.Provider.BaseURL)
-	out.Provider.Active = name
-	out.Providers = map[string]ProviderProfile{
-		name: {
-			Preset:                     name,
-			Kind:                       firstNonEmpty(in.Provider.Kind, "openai-compatible"),
-			API:                        in.Provider.API,
-			BaseURL:                    in.Provider.BaseURL,
-			APIKeyEnv:                  in.Provider.APIKeyEnv,
-			SmallModel:                 firstNonEmpty(in.Models.SmallModel, in.Models.Scout),
-			LargeModel:                 firstNonEmpty(in.Models.LargeModel, in.Models.Verifier),
-			StateMode:                  in.Provider.StateMode,
-			ConnectTimeout:             in.Provider.ConnectTimeout,
-			RequestTimeout:             in.Provider.RequestTimeout,
-			StreamIdleTimeout:          in.Provider.StreamIdleTimeout,
-			MaxRetries:                 in.Provider.MaxRetries,
-			AllowInsecureHTTPLocalhost: in.Provider.AllowInsecureHTTPLocalhost,
-		},
+	// Already version 2 (has profiles): keep every profile and the active
+	// selection as-is so re-migration is idempotent and no configured profile is
+	// dropped. Only a version-1 input synthesizes a single profile from the flat
+	// provider fields.
+	if len(in.Providers) == 0 {
+		name := profileNameFor(in.Provider.BaseURL)
+		out.Provider.Active = name
+		out.Providers = map[string]ProviderProfile{
+			name: {
+				Preset:                     name,
+				Kind:                       firstNonEmpty(in.Provider.Kind, "openai-compatible"),
+				API:                        in.Provider.API,
+				BaseURL:                    in.Provider.BaseURL,
+				APIKeyEnv:                  in.Provider.APIKeyEnv,
+				SmallModel:                 firstNonEmpty(in.Models.SmallModel, in.Models.Scout),
+				LargeModel:                 firstNonEmpty(in.Models.LargeModel, in.Models.Verifier),
+				StateMode:                  in.Provider.StateMode,
+				ConnectTimeout:             in.Provider.ConnectTimeout,
+				RequestTimeout:             in.Provider.RequestTimeout,
+				StreamIdleTimeout:          in.Provider.StreamIdleTimeout,
+				MaxRetries:                 in.Provider.MaxRetries,
+				AllowInsecureHTTPLocalhost: in.Provider.AllowInsecureHTTPLocalhost,
+			},
+		}
 	}
 	out.Models.SmallModel = firstNonEmpty(in.Models.SmallModel, in.Models.Scout)
 	out.Models.LargeModel = firstNonEmpty(in.Models.LargeModel, in.Models.Verifier)
