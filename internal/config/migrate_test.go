@@ -376,17 +376,24 @@ api_key_env = "EMBEDDINGS_API_KEY"
 	if !strings.Contains(out, "EMBEDDINGS_API_KEY") {
 		t.Errorf("String() should reference the embeddings env-var name")
 	}
-	if !strings.Contains(out, "api_key_present = true") {
-		t.Errorf("String() should report the embeddings key as present:\n%s", out)
+	// Scope the presence check to the [embeddings] block; the [provider] block
+	// also emits api_key_present and must not satisfy this assertion.
+	idx := strings.Index(out, "[embeddings]")
+	if idx < 0 {
+		t.Fatalf("String() missing [embeddings] block:\n%s", out)
+	}
+	if !strings.Contains(out[idx:], "api_key_present = true") {
+		t.Errorf("[embeddings] block should report the key as present:\n%s", out)
 	}
 }
 
 // TestEmbeddingsAPIKeyEnvOverride proves CODEEXPERT_EMBEDDINGS_API_KEY_ENV
-// overrides the configured env-var name before secret resolution, mirroring the
-// provider override.
+// overrides the file-configured env-var name before secret resolution, so the
+// override's value wins over the file value — mirroring the provider override.
 func TestEmbeddingsAPIKeyEnvOverride(t *testing.T) {
 	t.Setenv("CODEEXPERT_EMBEDDINGS_API_KEY_ENV", "OVERRIDE_EMBEDDINGS_KEY")
 	t.Setenv("OVERRIDE_EMBEDDINGS_KEY", "sk-embed-from-override")
+	t.Setenv("FILE_EMBEDDINGS_KEY", "sk-embed-from-file")
 	cfg, err := LoadFile(writeTOML(t, `
 version = 2
 [provider]
@@ -400,15 +407,32 @@ large_model = "fugu-ultra"
 enabled = true
 provider = "openai-compatible"
 model = "text-embedding-3-small"
+api_key_env = "FILE_EMBEDDINGS_KEY"
 `))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if cfg.Embeddings.APIKeyEnv != "OVERRIDE_EMBEDDINGS_KEY" {
-		t.Fatalf("override did not set api_key_env: got %q", cfg.Embeddings.APIKeyEnv)
+		t.Fatalf("override did not beat the file api_key_env: got %q", cfg.Embeddings.APIKeyEnv)
 	}
 	if cfg.Embeddings.APIKey != "sk-embed-from-override" {
 		t.Fatalf("embeddings key not resolved from overridden env: got %q", cfg.Embeddings.APIKey)
+	}
+}
+
+// TestEmbeddingsKeyNeverRenderedToTOML guards the toml:"-" tag on the resolved
+// embeddings key: it must never appear in TOML serialization.
+func TestEmbeddingsKeyNeverRenderedToTOML(t *testing.T) {
+	cfg := Defaults()
+	cfg.Embeddings.Enabled = true
+	cfg.Embeddings.APIKeyEnv = "EMBEDDINGS_API_KEY"
+	cfg.Embeddings.APIKey = "sk-embed-secret-rendered"
+	out, err := RenderTOML(cfg)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "sk-embed-secret-rendered") {
+		t.Errorf("RenderTOML leaked the embeddings API key:\n%s", out)
 	}
 }
 
