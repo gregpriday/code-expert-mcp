@@ -531,10 +531,11 @@ func writePlanStep(b *strings.Builder, s schema.PlanStep) {
 // writeHelpBody renders the body sections of an engineering help report. Each
 // "##" section — problem restatement, observed evidence, likely causes,
 // recommended direction, investigation steps, validation steps, alternatives,
-// risks, and assumptions — is guarded by a presence check and emitted in this
-// fixed order only when it has content, so the report grows to fit the data.
-// Likely causes are labelled "verified" or "inference" from each cause's
-// Verified flag and list their reasoning and cited evidence IDs when present.
+// risks, assumptions, and a confidence statement — is guarded by a presence
+// check and emitted in this fixed order only when it has content, so the report
+// grows to fit the data. Likely causes are labelled "verified" or "inference"
+// from each cause's Verified flag and list their reasoning and cited evidence
+// IDs when present.
 func writeHelpBody(b *strings.Builder, h schema.HelpReport) {
 	if h.ProblemRestatement != "" {
 		b.WriteString("## Problem restatement\n\n")
