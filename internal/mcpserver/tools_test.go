@@ -45,20 +45,28 @@ func TestToolAnnotationsAreReadOnlyOpenWorld(t *testing.T) {
 // openWorldHint are present and true, while destructiveHint and idempotentHint
 // are absent (omitempty), so clients never see contradictory hints.
 func TestToolAnnotationsWireFormat(t *testing.T) {
-	data, err := json.Marshal(planToolDef().Annotations)
-	if err != nil {
-		t.Fatalf("marshal annotations: %v", err)
+	defs := map[string]*mcp.Tool{
+		"plan":   planToolDef(),
+		"review": reviewToolDef(),
 	}
-	got := string(data)
-	for _, want := range []string{`"readOnlyHint":true`, `"openWorldHint":true`} {
-		if !strings.Contains(got, want) {
-			t.Errorf("annotations JSON %s missing %s", got, want)
-		}
-	}
-	for _, absent := range []string{"destructiveHint", "idempotentHint"} {
-		if strings.Contains(got, absent) {
-			t.Errorf("annotations JSON %s must omit %s", got, absent)
-		}
+	for name, tool := range defs {
+		t.Run(name, func(t *testing.T) {
+			data, err := json.Marshal(tool.Annotations)
+			if err != nil {
+				t.Fatalf("marshal annotations: %v", err)
+			}
+			got := string(data)
+			for _, want := range []string{`"readOnlyHint":true`, `"openWorldHint":true`} {
+				if !strings.Contains(got, want) {
+					t.Errorf("annotations JSON %s missing %s", got, want)
+				}
+			}
+			for _, absent := range []string{"destructiveHint", "idempotentHint"} {
+				if strings.Contains(got, absent) {
+					t.Errorf("annotations JSON %s must omit %s", got, absent)
+				}
+			}
+		})
 	}
 }
 
