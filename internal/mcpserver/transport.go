@@ -2,6 +2,8 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"net"
 	"net/http"
 	"strings"
@@ -113,14 +115,11 @@ func isLoopbackListen(listen string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// subtleCompare returns true when the strings DIFFER (constant-ish time).
+// subtleCompare returns true when the strings DIFFER. Both inputs are hashed to a
+// fixed size before the constant-time comparison, so neither the contents nor the
+// length of the secret leak through timing or an early length check.
 func subtleCompare(a, b string) bool {
-	if len(a) != len(b) {
-		return true
-	}
-	var diff byte
-	for i := 0; i < len(a); i++ {
-		diff |= a[i] ^ b[i]
-	}
-	return diff != 0
+	ah := sha256.Sum256([]byte(a))
+	bh := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ah[:], bh[:]) == 0
 }

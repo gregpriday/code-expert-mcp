@@ -1,6 +1,6 @@
-// Package prompts embeds the versioned prompt assets with stable IDs and content
-// hashes. Each run records the prompt IDs and hashes it used so outputs are
-// reproducible and auditable.
+// Package prompts embeds the versioned prompt assets, each with a stable ID and a
+// content hash (via Hash) so a prompt's exact version can be identified for
+// provenance and reproducibility.
 package prompts
 
 import (
@@ -27,7 +27,6 @@ const (
 	ReviewContext    = "review-context"
 	ReviewSpecialist = "review-specialist"
 	ReviewVerify     = "review-verify"
-	ReviewFinalize   = "review-finalize"
 	RepairSchema     = "repair-schema"
 )
 

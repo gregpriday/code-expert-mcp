@@ -66,8 +66,25 @@ func ReviewMarkdown(res schema.ReviewResult) string {
 	if len(res.Findings) == 0 {
 		b.WriteString("No blocking findings were found within the automated review scope.\n\n")
 	} else {
+		var blocking, nonBlocking []schema.ReviewFinding
 		for _, f := range res.Findings {
+			if f.Blocking {
+				blocking = append(blocking, f)
+			} else {
+				nonBlocking = append(nonBlocking, f)
+			}
+		}
+		if len(blocking) == 0 {
+			b.WriteString("No blocking findings within the automated review scope. See non-blocking findings below.\n\n")
+		}
+		for _, f := range blocking {
 			writeReviewFinding(&b, f)
+		}
+		if len(nonBlocking) > 0 {
+			b.WriteString("## Non-blocking findings\n\n")
+			for _, f := range nonBlocking {
+				writeReviewFinding(&b, f)
+			}
 		}
 	}
 

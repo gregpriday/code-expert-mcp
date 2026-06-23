@@ -23,7 +23,6 @@ func registerResources(s *mcp.Server, d Deps) {
 	}{
 		{"codeexpert://runs/{run_id}/report", "text/markdown", "Run report (Markdown)"},
 		{"codeexpert://runs/{run_id}/result.json", "application/json", "Run result (JSON)"},
-		{"codeexpert://runs/{run_id}/evidence/{evidence_id}", "application/json", "Run evidence record"},
 	}
 	for _, t := range templates {
 		s.AddResourceTemplate(&mcp.ResourceTemplate{
