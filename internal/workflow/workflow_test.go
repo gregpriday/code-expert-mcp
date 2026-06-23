@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/gregpriday/codeexpert/internal/config"
@@ -190,21 +189,6 @@ func (errorProvider) Generate(ctx context.Context, req provider.GenerationReques
 	return provider.GenerationResponse{}, fmt.Errorf("simulated provider failure")
 }
 
-// recordingProvider captures every GenerationRequest while delegating the
-// response logic to an embedded fakeProvider, so the pipeline still completes.
-type recordingProvider struct {
-	*fakeProvider
-	mu       sync.Mutex
-	requests []provider.GenerationRequest
-}
-
-func (r *recordingProvider) Generate(ctx context.Context, req provider.GenerationRequest) (provider.GenerationResponse, error) {
-	r.mu.Lock()
-	r.requests = append(r.requests, req)
-	r.mu.Unlock()
-	return r.fakeProvider.Generate(ctx, req)
-}
-
 // TestPlanPropagatesProviderError confirms that a hard provider failure during
 // synthesis surfaces as an error from Plan rather than a silent empty result.
 func TestPlanPropagatesProviderError(t *testing.T) {
@@ -224,7 +208,7 @@ func TestPlanPropagatesProviderError(t *testing.T) {
 // provider requests it issues (NewSession always streams).
 func TestSessionRequestsAreStreamed(t *testing.T) {
 	dir, rel := tempGitRepo(t)
-	rec := &recordingProvider{fakeProvider: &fakeProvider{existingFile: rel}}
+	rec := &recordingProvider{inner: &fakeProvider{existingFile: rel}}
 	cfg := config.Defaults()
 	cfg.Cache.Enabled = false
 	eng := &Engine{Cfg: cfg, Provider: rec, Log: telemetry.Nop()}
@@ -236,11 +220,11 @@ func TestSessionRequestsAreStreamed(t *testing.T) {
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.requests) == 0 {
+	if len(rec.calls) == 0 {
 		t.Fatal("expected the session to issue at least one provider request")
 	}
 	streamed := false
-	for _, req := range rec.requests {
+	for _, req := range rec.calls {
 		if req.Stream {
 			streamed = true
 			break
