@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/gregpriday/codeexpert/internal/budget"
 	"github.com/gregpriday/codeexpert/internal/index"
 	"github.com/gregpriday/codeexpert/internal/llmtools"
@@ -95,26 +97,31 @@ func (e *Engine) runCandidatePasses(ctx context.Context, rs *repo.ReviewSnapshot
 	var (
 		mu  sync.Mutex
 		all []candidateFinding
-		wg  sync.WaitGroup
 	)
 	system := prompts.MustGet(prompts.CommonSystem)
+	// errgroup derives gCtx from ctx and cancels it when the parent context is
+	// cancelled, so a long-running pass observes cancellation through gCtx and
+	// returns promptly instead of running on after Wait. Passes soft-fail (they
+	// return nil candidates rather than an error), so g.Wait never reports one;
+	// we keep the mu-guarded append because passes contribute variable-length
+	// slices to the shared result.
+	g, gCtx := errgroup.WithContext(ctx)
 	for _, p := range passes {
-		wg.Add(1)
-		go func(p passDef) {
-			defer wg.Done()
+		g.Go(func() error {
 			if progress != nil {
 				progress("candidates", p.id)
 			}
-			cands := e.runOnePass(ctx, reg, reviewerModel, reviewerEffort, system+"\n\n"+p.prompt, p.message, p.useTools, tracker, usage)
+			cands := e.runOnePass(gCtx, reg, reviewerModel, reviewerEffort, system+"\n\n"+p.prompt, p.message, p.useTools, tracker, usage)
 			for i := range cands {
 				cands[i].Pass = p.id
 			}
 			mu.Lock()
 			all = append(all, cands...)
 			mu.Unlock()
-		}(p)
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 	return all
 }
 
