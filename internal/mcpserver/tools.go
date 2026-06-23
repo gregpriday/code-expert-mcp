@@ -77,10 +77,12 @@ func registerTools(s *mcp.Server, d Deps) {
 }
 
 // toolError converts an internal error into one the SDK renders as an isError
-// tool result. The message carries the typed code so the host model can react.
+// tool result. It returns the structured *schema.ToolError directly: that type
+// implements error, and its Error method already renders the typed code (and
+// stage, when present) so the host model can react, while preserving the code,
+// stage, and details that a fmt.Errorf wrapper would discard.
 func toolError(err error) error {
-	te := schema.AsToolError(err)
-	return fmt.Errorf("%s: %s", te.Code, te.Message)
+	return schema.AsToolError(err)
 }
 
 func textContent(s string) []mcp.Content {

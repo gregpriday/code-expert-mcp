@@ -25,7 +25,7 @@ func TestEvidenceCatalogDedupesAcrossCandidates(t *testing.T) {
 		mkCandidate("main.go", 2, 3, schema.CategoryCorrectness, "fix", "E-1"),
 		mkCandidate("main.go", 3, 4, schema.CategoryCorrectness, "fix", "E-1"),
 	}
-	out := renderEvidenceCatalog(store, cands)
+	out := renderEvidenceForVerifier(store, cands)
 	if got := strings.Count(out, "shared record"); got != 1 {
 		t.Errorf("record cited by 3 candidates should render once, rendered %d times:\n%s", got, out)
 	}
@@ -42,7 +42,7 @@ func TestEvidenceCatalogFlagsMissingOnce(t *testing.T) {
 		mkCandidate("main.go", 1, 2, schema.CategoryCorrectness, "fix", "E-missing"),
 		mkCandidate("main.go", 2, 3, schema.CategoryCorrectness, "fix", "E-missing"),
 	}
-	out := renderEvidenceCatalog(store, cands)
+	out := renderEvidenceForVerifier(store, cands)
 	if got := strings.Count(out, "NOT FOUND"); got != 1 {
 		t.Errorf("missing ID should be flagged once, flagged %d times:\n%s", got, out)
 	}
@@ -61,7 +61,7 @@ func TestEvidenceCatalogTrimsIDs(t *testing.T) {
 		mkCandidate("main.go", 2, 3, schema.CategoryCorrectness, "fix", "E-1"),
 		mkCandidate("main.go", 3, 4, schema.CategoryCorrectness, "fix", "E-missing"),
 	}
-	out := renderEvidenceCatalog(store, cands)
+	out := renderEvidenceForVerifier(store, cands)
 	if strings.Contains(out, "NOT FOUND in evidence store (do not trust): E-1") {
 		t.Errorf("padded ' E-1 ' should resolve to its record, not be flagged missing:\n%s", out)
 	}

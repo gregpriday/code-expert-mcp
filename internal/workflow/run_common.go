@@ -67,6 +67,10 @@ func normalizeTask(req schema.PlanRequest, snap *repo.Snapshot) schema.Interpret
 	return it
 }
 
+// extractAnchors pulls candidate search anchors out of free-form instruction
+// text: file-like paths, quoted phrases, and identifier-like tokens (excluding
+// common words). The result is order-preserving and may contain duplicates;
+// callers pass it through dedupeStrings to collapse repeats.
 func extractAnchors(text string) []string {
 	if text == "" {
 		return nil

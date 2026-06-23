@@ -148,7 +148,13 @@ func writeReviewScope(b *strings.Builder, snap schema.ReviewSnapshot, status sch
 	b.WriteString("\n")
 }
 
-// writeReviewFinding renders one review finding in detail.
+// writeReviewFinding renders one review finding in detail. It emits a header
+// carrying severity, evidence level, and title, then an italic meta line
+// (category, an optional "blocking" marker, and an optional source location).
+// The claim, trigger, and impact paragraphs, the evidence list, the assumptions
+// bullets, and the recommended direction are each rendered only when present.
+// Evidence entries prefer a formatted path:line location and fall back to the
+// raw evidence ID when no location is available.
 func writeReviewFinding(b *strings.Builder, f schema.ReviewFinding) {
 	fmt.Fprintf(b, "### [%s] [%s] %s\n\n", f.Severity, f.EvidenceLevel, f.Title)
 
@@ -445,7 +451,13 @@ func writePlanBody(b *strings.Builder, p schema.ImplementationPlan) {
 	}
 }
 
-// writePlanStep renders one ordered implementation step.
+// writePlanStep renders one ordered implementation step. The heading uses the
+// step title, falling back to the objective when no title is set, and is
+// prefixed with the step ID when one exists. The objective paragraph is emitted
+// only when it differs from the heading text, avoiding a duplicate line. Every
+// remaining section — dependencies, files, symbols, evidence IDs, detailed
+// changes, invariants, validation steps, and risks — is rendered only when its
+// slice is non-empty, so a sparse step produces a compact block.
 func writePlanStep(b *strings.Builder, s schema.PlanStep) {
 	title := s.Title
 	if title == "" {
@@ -516,7 +528,14 @@ func writePlanStep(b *strings.Builder, s schema.PlanStep) {
 	b.WriteString("\n")
 }
 
-// writeHelpBody renders the body sections of an engineering help report.
+// writeHelpBody renders the body sections of an engineering help report. Each
+// "##" section — problem restatement, observed evidence, likely causes,
+// recommended direction, investigation steps, validation steps, alternatives,
+// risks, assumptions, and a confidence statement — is guarded by a presence
+// check and emitted in this fixed order only when it has content, so the report
+// grows to fit the data. Likely causes are labelled "verified" or "inference"
+// from each cause's Verified flag and list their reasoning and cited evidence
+// IDs when present.
 func writeHelpBody(b *strings.Builder, h schema.HelpReport) {
 	if h.ProblemRestatement != "" {
 		b.WriteString("## Problem restatement\n\n")

@@ -270,20 +270,20 @@ func TestResolveRefsDropsUnknown(t *testing.T) {
 	}
 }
 
-func TestRenderEvidenceCatalogFlagsMissing(t *testing.T) {
+func TestRenderEvidenceForVerifierFlagsMissing(t *testing.T) {
 	store := evidence.NewStore("snap")
 	store.Add(schema.EvidenceRecord{ID: "E-1", Kind: schema.EvidenceKindFile, Path: "main.go", StartLine: 1, EndLine: 2, Summary: "real record"})
 	cands := []candidateFinding{
 		mkCandidate("main.go", 1, 2, schema.CategoryCorrectness, "fix", "E-1", "E-missing"),
 	}
-	out := renderEvidenceCatalog(store, cands)
+	out := renderEvidenceForVerifier(store, cands)
 	for _, want := range []string{"E-1", "main.go:1-2", "real record", "NOT FOUND", "E-missing"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("renderEvidenceCatalog output missing %q:\n%s", want, out)
+			t.Errorf("renderEvidenceForVerifier output missing %q:\n%s", want, out)
 		}
 	}
 	noCites := []candidateFinding{mkCandidate("main.go", 1, 2, schema.CategoryCorrectness, "fix")}
-	if !strings.Contains(renderEvidenceCatalog(store, noCites), "No evidence cited") {
+	if !strings.Contains(renderEvidenceForVerifier(store, noCites), "No evidence cited") {
 		t.Error("a catalog with no cited evidence should say so")
 	}
 }
