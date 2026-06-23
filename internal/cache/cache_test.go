@@ -249,12 +249,21 @@ func TestGCEvictsObjectsOverBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Set a budget below current occupancy so eviction must run.
-	freed, err := c.GC(0, st.TotalBytes/2)
+	maxBytes := st.TotalBytes / 2
+	freed, err := c.GC(0, maxBytes)
 	if err != nil {
 		t.Fatalf("GC: %v", err)
 	}
 	if freed <= 0 {
 		t.Errorf("size-budget GC freed = %d, want > 0", freed)
+	}
+	// GC must evict down to (or below) the budget, not merely free something.
+	after, err := c.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TotalBytes > maxBytes {
+		t.Errorf("after GC, cache holds %d bytes, want <= budget %d", after.TotalBytes, maxBytes)
 	}
 }
 
