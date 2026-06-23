@@ -7,10 +7,12 @@ import (
 )
 
 // Store is the per-run evidence collection. It is safe for concurrent use by the
-// candidate passes.
+// candidate passes. Reads (Get, Has, All) take a read lock so the concurrent
+// passes don't serialize on each other; only Add, the sole writer, takes the
+// exclusive lock.
 type Store struct {
 	snapshotID string
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	records    map[string]schema.EvidenceRecord
 	order      []string
 }
@@ -40,24 +42,24 @@ func (s *Store) Add(rec schema.EvidenceRecord) schema.EvidenceRecord {
 
 // Get returns a stored record by ID.
 func (s *Store) Get(id string) (schema.EvidenceRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	r, ok := s.records[id]
 	return r, ok
 }
 
 // Has reports whether an ID is known.
 func (s *Store) Has(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	_, ok := s.records[id]
 	return ok
 }
 
 // All returns records in insertion order.
 func (s *Store) All() []schema.EvidenceRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]schema.EvidenceRecord, 0, len(s.order))
 	for _, id := range s.order {
 		out = append(out, s.records[id])

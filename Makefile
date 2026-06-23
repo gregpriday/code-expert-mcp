@@ -53,8 +53,8 @@ uninstall: ## Remove the installed binary
 test: ## Unit + end-to-end + no-write invariant
 	$(GO) test ./...
 
-test-race: ## Race detector on the concurrent workflow passes (needs cgo)
-	CGO_ENABLED=1 $(GO) test -race ./internal/workflow/
+test-race: ## Race detector on the concurrent workflow passes + evidence store (needs cgo)
+	CGO_ENABLED=1 $(GO) test -race ./internal/workflow/ ./internal/evidence/
 
 vet: ## go vet ./...
 	$(GO) vet ./...
