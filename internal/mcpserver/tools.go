@@ -16,22 +16,40 @@ const planToolDescription = `Explore a repository and return either a detailed i
 
 const reviewToolDescription = `Review a frozen set of Git changes and return evidence-backed findings, coverage, and limitations. Precision-first: returns no findings when nothing meets the publication threshold, and never claims a change is safe to merge. Read-only.`
 
-func registerTools(s *mcp.Server, d Deps) {
-	falsePtr := false
-	openWorld := false
+// readOnlyAnnotations returns the annotation set shared by both tools. They
+// never modify the repository (ReadOnlyHint), but they reach the filesystem,
+// git, and a remote model provider, so they operate in an open world. The model
+// also varies run to run, so the calls are not idempotent. DestructiveHint and
+// IdempotentHint are omitted entirely: the spec defines both only when
+// ReadOnlyHint is false, so emitting them on a read-only tool is just noise.
+func readOnlyAnnotations() *mcp.ToolAnnotations {
+	openWorld := true
+	return &mcp.ToolAnnotations{
+		ReadOnlyHint:  true,
+		OpenWorldHint: &openWorld,
+	}
+}
 
-	planTool := &mcp.Tool{
+func planToolDef() *mcp.Tool {
+	return &mcp.Tool{
 		Name:        "codeexpert_plan",
 		Title:       "CodeExpert Plan / Help",
 		Description: planToolDescription,
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:    true,
-			DestructiveHint: &falsePtr,
-			IdempotentHint:  true,
-			OpenWorldHint:   &openWorld,
-		},
+		Annotations: readOnlyAnnotations(),
 	}
-	mcp.AddTool(s, planTool, func(ctx context.Context, req *mcp.CallToolRequest, in schema.PlanRequest) (*mcp.CallToolResult, schema.PlanResult, error) {
+}
+
+func reviewToolDef() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "codeexpert_review",
+		Title:       "CodeExpert Review",
+		Description: reviewToolDescription,
+		Annotations: readOnlyAnnotations(),
+	}
+}
+
+func registerTools(s *mcp.Server, d Deps) {
+	mcp.AddTool(s, planToolDef(), func(ctx context.Context, req *mcp.CallToolRequest, in schema.PlanRequest) (*mcp.CallToolResult, schema.PlanResult, error) {
 		opts := workflow.RunOptions{
 			AllowedRoots: rootsFromRequest(ctx, req),
 			Progress:     progressFromRequest(ctx, req),
@@ -44,18 +62,7 @@ func registerTools(s *mcp.Server, d Deps) {
 		return &mcp.CallToolResult{Content: textContent(planTextSummary(res))}, res, nil
 	})
 
-	reviewTool := &mcp.Tool{
-		Name:        "codeexpert_review",
-		Title:       "CodeExpert Review",
-		Description: reviewToolDescription,
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:    true,
-			DestructiveHint: &falsePtr,
-			IdempotentHint:  true,
-			OpenWorldHint:   &openWorld,
-		},
-	}
-	mcp.AddTool(s, reviewTool, func(ctx context.Context, req *mcp.CallToolRequest, in schema.ReviewRequest) (*mcp.CallToolResult, schema.ReviewResult, error) {
+	mcp.AddTool(s, reviewToolDef(), func(ctx context.Context, req *mcp.CallToolRequest, in schema.ReviewRequest) (*mcp.CallToolResult, schema.ReviewResult, error) {
 		opts := workflow.RunOptions{
 			AllowedRoots: rootsFromRequest(ctx, req),
 			Progress:     progressFromRequest(ctx, req),
