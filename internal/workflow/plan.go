@@ -107,6 +107,10 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 		status = schema.StatusPartial
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: "time budget reached before completion"})
 	}
+	if reason, limited := tracker.Exhausted(); limited {
+		status = schema.StatusPartial
+		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: reason + "; exploration stopped early and context may be incomplete"})
+	}
 	if snap.Truncated() {
 		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "snapshot truncated at the configured byte limit; some files were not fully indexed"})
 	}

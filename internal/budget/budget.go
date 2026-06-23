@@ -34,6 +34,7 @@ type Tracker struct {
 	internalTools int
 	filesRead     int
 	bytesRead     int64
+	exhausted     string // first non-time budget dimension to be exhausted
 }
 
 // New starts a tracker.
@@ -62,7 +63,7 @@ func (t *Tracker) ChargeModelCall() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.limits.MaxModelCalls > 0 && t.modelCalls >= t.limits.MaxModelCalls {
-		return schema.NewError(schema.CodeBudgetExhausted, "model call budget (%d) exhausted", t.limits.MaxModelCalls)
+		return t.exhaust("model call budget (%d) exhausted", t.limits.MaxModelCalls)
 	}
 	t.modelCalls++
 	return nil
@@ -73,7 +74,7 @@ func (t *Tracker) ChargeInternalTool() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.limits.MaxInternalTools > 0 && t.internalTools >= t.limits.MaxInternalTools {
-		return schema.NewError(schema.CodeBudgetExhausted, "internal tool budget (%d) exhausted", t.limits.MaxInternalTools)
+		return t.exhaust("internal tool budget (%d) exhausted", t.limits.MaxInternalTools)
 	}
 	t.internalTools++
 	return nil
@@ -84,14 +85,32 @@ func (t *Tracker) ChargeFileRead(n int64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.limits.MaxFilesRead > 0 && t.filesRead >= t.limits.MaxFilesRead {
-		return schema.NewError(schema.CodeBudgetExhausted, "file read budget (%d) exhausted", t.limits.MaxFilesRead)
+		return t.exhaust("file read budget (%d) exhausted", t.limits.MaxFilesRead)
 	}
 	if t.limits.MaxBytesRead > 0 && t.bytesRead+n > t.limits.MaxBytesRead {
-		return schema.NewError(schema.CodeBudgetExhausted, "byte read budget (%d) exhausted", t.limits.MaxBytesRead)
+		return t.exhaust("byte read budget (%d) exhausted", t.limits.MaxBytesRead)
 	}
 	t.filesRead++
 	t.bytesRead += n
 	return nil
+}
+
+// exhaust records the first non-time exhaustion reason and returns the typed
+// error. The caller must hold t.mu.
+func (t *Tracker) exhaust(format string, args ...any) error {
+	err := schema.NewError(schema.CodeBudgetExhausted, format, args...)
+	if t.exhausted == "" {
+		t.exhausted = schema.AsToolError(err).Message
+	}
+	return err
+}
+
+// Exhausted reports the first non-time budget dimension that was exhausted, if
+// any. Wall-time exhaustion is reported separately via TimedOut.
+func (t *Tracker) Exhausted() (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.exhausted, t.exhausted != ""
 }
 
 // Snapshot returns the current usage counters.

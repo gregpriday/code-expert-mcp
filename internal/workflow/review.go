@@ -105,6 +105,9 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	if tracker.TimedOut() {
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: "time budget reached; coverage may be incomplete"})
 	}
+	if reason, limited := tracker.Exhausted(); limited {
+		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: reason + "; coverage may be incomplete"})
+	}
 	progress("complete", "done")
 	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile), nil
 }
@@ -117,7 +120,7 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 	manifest := rs.Manifest()
 	coverage := buildCoverage(manifest, e.Cfg, riskMap, findings)
 	status := schema.StatusComplete
-	if tracker.TimedOut() {
+	if _, limited := tracker.Exhausted(); tracker.TimedOut() || limited {
 		status = schema.StatusPartial
 	}
 
