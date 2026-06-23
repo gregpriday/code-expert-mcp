@@ -13,7 +13,7 @@ func TestEnrichEnclosingSymbols(t *testing.T) {
 	m := &repo.ChangeManifest{Files: []repo.ChangedFile{
 		{Path: rel, Status: "M", NewRanges: []repo.LineRange{{Start: 4, End: 4}}},
 	}}
-	enrichEnclosingSymbols(context.Background(), snap, m)
+	enrichEnclosingSymbols(context.Background(), snap, m, 100)
 	if len(m.Files[0].Symbols) == 0 {
 		t.Fatal("expected enclosing symbols for a change inside func main")
 	}
@@ -31,9 +31,22 @@ func TestEnrichEnclosingSymbols(t *testing.T) {
 func TestEnrichEnclosingSymbolsSkipsWhenNoRanges(t *testing.T) {
 	snap, rel := testSnapshot(t)
 	m := &repo.ChangeManifest{Files: []repo.ChangedFile{{Path: rel, Status: "M"}}}
-	enrichEnclosingSymbols(context.Background(), snap, m)
+	enrichEnclosingSymbols(context.Background(), snap, m, 100)
 	if len(m.Files[0].Symbols) != 0 {
 		t.Errorf("no NewRanges should yield no enclosing symbols, got %v", m.Files[0].Symbols)
+	}
+}
+
+// TestEnrichEnclosingSymbolsDisabled proves a non-positive cap disables
+// enrichment entirely, leaving the manifest untouched.
+func TestEnrichEnclosingSymbolsDisabled(t *testing.T) {
+	snap, rel := testSnapshot(t)
+	m := &repo.ChangeManifest{Files: []repo.ChangedFile{
+		{Path: rel, Status: "M", NewRanges: []repo.LineRange{{Start: 4, End: 4}}},
+	}}
+	enrichEnclosingSymbols(context.Background(), snap, m, 0)
+	if len(m.Files[0].Symbols) != 0 {
+		t.Errorf("a zero cap should disable enrichment, got %v", m.Files[0].Symbols)
 	}
 }
 

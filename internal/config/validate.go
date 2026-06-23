@@ -85,11 +85,21 @@ func Validate(c *Config) error {
 
 	// Budgets / retrieval sanity.
 	if c.Retrieval.MaxFilesPerRun < 0 || c.Retrieval.MaxFileReads < 0 ||
-		c.Retrieval.MaxContextTokens < 0 || c.Retrieval.MaxModelToolRounds < 0 {
+		c.Retrieval.MaxContextTokens < 0 || c.Retrieval.MaxModelToolRounds < 0 ||
+		c.Retrieval.MaxBytesRead < 0 {
 		return schema.NewError(schema.CodeConfigInvalid, "retrieval limits must not be negative")
 	}
 	if c.Server.MaxConcurrentRuns < 1 {
 		return schema.NewError(schema.CodeConfigInvalid, "server.max_concurrent_runs must be at least 1")
+	}
+
+	// Per-profile model-call limits and review operational caps.
+	if c.ProfileLimits.MaxModelCallsFast < 0 || c.ProfileLimits.MaxModelCallsBalanced < 0 ||
+		c.ProfileLimits.MaxModelCallsDeep < 0 {
+		return schema.NewError(schema.CodeConfigInvalid, "profile_limits model-call limits must not be negative")
+	}
+	if c.Review.MaxSymbolEnrichFiles < 0 || c.Review.LineOverlapTolerance < 0 {
+		return schema.NewError(schema.CodeConfigInvalid, "review limits must not be negative")
 	}
 
 	// Profiles.

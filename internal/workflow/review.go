@@ -70,7 +70,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 
 	// Enrich the manifest with enclosing changed symbols so the tool-less
 	// diff-local pass receives what its prompt references.
-	enrichEnclosingSymbols(ctx, snap, manifest)
+	enrichEnclosingSymbols(ctx, snap, manifest, e.Cfg.Review.MaxSymbolEnrichFiles)
 
 	// Candidate passes (concurrent).
 	progress("candidates", "running candidate passes")

@@ -30,6 +30,9 @@ type Config struct {
 	Review     ReviewConfig     `toml:"review"`
 	Checks     ChecksConfig     `toml:"checks"`
 
+	// ProfileLimits sets the per-profile model-call ceilings the engine enforces.
+	ProfileLimits ProfileLimitsConfig `toml:"profile_limits"`
+
 	// Version-2 inputs (collapsed into Provider/Models by Load).
 	Providers map[string]ProviderProfile `toml:"providers"`
 	Routing   RoutingConfig              `toml:"routing"`
@@ -180,6 +183,9 @@ type RetrievalConfig struct {
 	InitialContextTokens int    `toml:"initial_context_tokens"`
 	SearchResultLimit    int    `toml:"search_result_limit"`
 	UseRipgrep           bool   `toml:"use_ripgrep"`
+	// MaxBytesRead is the default per-run cap on bytes read by model tools. Zero
+	// means no limit; a per-request budget (schema.Budget.MaxBytesRead) overrides it.
+	MaxBytesRead int64 `toml:"max_bytes_read"`
 }
 
 // EmbeddingsConfig configures the optional, provider-neutral embedding index.
@@ -225,6 +231,21 @@ type ReviewConfig struct {
 	IncludeStyle        bool     `toml:"include_style"`
 	IncludePraise       bool     `toml:"include_praise"`
 	IncludeGenerated    bool     `toml:"include_generated"`
+	// MaxSymbolEnrichFiles caps how many changed files have their enclosing changed
+	// symbols resolved for the diff-local pass. Zero disables symbol enrichment.
+	MaxSymbolEnrichFiles int `toml:"max_symbol_enrich_files"`
+	// LineOverlapTolerance is the adjacent-context tolerance (in lines) when
+	// attributing a finding to a changed hunk. Zero requires exact overlap.
+	LineOverlapTolerance int `toml:"line_overlap_tolerance"`
+}
+
+// ProfileLimitsConfig sets the maximum number of model calls each analysis
+// profile may make. Zero means no explicit limit. A per-request budget
+// (schema.Budget.MaxModelCalls) overrides these.
+type ProfileLimitsConfig struct {
+	MaxModelCallsFast     int `toml:"max_model_calls_fast"`
+	MaxModelCallsBalanced int `toml:"max_model_calls_balanced"`
+	MaxModelCallsDeep     int `toml:"max_model_calls_deep"`
 }
 
 // ChecksConfig configures the external check runner.

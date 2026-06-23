@@ -188,19 +188,23 @@ func TestWithinChange(t *testing.T) {
 		name       string
 		ranges     []repo.LineRange
 		start, end int
+		tol        int
 		want       bool
 	}{
-		{"empty ranges pass", nil, 5, 6, true},
-		{"zero start passes", r, 0, 0, true},
-		{"inside hunk", r, 11, 11, true},
-		{"within tolerance below", r, 8, 9, true},
-		{"far below outside", r, 1, 1, false},
-		{"far above outside", r, 16, 20, false},
+		{"empty ranges pass", nil, 5, 6, 3, true},
+		{"zero start passes", r, 0, 0, 3, true},
+		{"inside hunk", r, 11, 11, 3, true},
+		{"within tolerance below", r, 8, 9, 3, true},
+		{"far below outside", r, 1, 1, 3, false},
+		{"far above outside", r, 16, 20, 3, false},
+		// tol=0 requires exact overlap: the adjacent line 9 no longer passes.
+		{"zero tol drops adjacent", r, 9, 9, 0, false},
+		{"zero tol keeps exact overlap", r, 10, 10, 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := withinChange(tc.ranges, tc.start, tc.end); got != tc.want {
-				t.Errorf("withinChange(%v, %d, %d) = %v, want %v", tc.ranges, tc.start, tc.end, got, tc.want)
+			if got := withinChange(tc.ranges, tc.start, tc.end, tc.tol); got != tc.want {
+				t.Errorf("withinChange(%v, %d, %d, %d) = %v, want %v", tc.ranges, tc.start, tc.end, tc.tol, got, tc.want)
 			}
 		})
 	}
