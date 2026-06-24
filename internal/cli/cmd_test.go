@@ -60,6 +60,7 @@ func TestInitEmitsConfigurableValueKeys(t *testing.T) {
 	for _, want := range []string{
 		"max_bytes_read", "max_symbol_enrich_files", "line_overlap_tolerance",
 		"[profile_limits]", "max_model_calls_fast", "max_model_calls_balanced", "max_model_calls_deep",
+		"[grounding]", "search_context_size",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("init template missing %q:\n%s", want, text)

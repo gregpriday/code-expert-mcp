@@ -107,6 +107,10 @@ func Defaults() Config {
 			MaxParallel:  2,
 			MaxTotalTime: Duration(20 * time.Minute),
 		},
+		Grounding: GroundingConfig{
+			Enabled:           false,
+			SearchContextSize: "medium",
+		},
 		ProfileLimits: ProfileLimitsConfig{
 			MaxModelCallsFast:     3,
 			MaxModelCallsBalanced: 7,

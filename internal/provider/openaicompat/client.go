@@ -140,6 +140,7 @@ func (c *Client) Capabilities(ctx context.Context) provider.ProviderCapabilities
 		SupportsStructured: true,
 		SupportsStreaming:  true,
 		SupportsReasoning:  c.opts.Dialect == "responses",
+		SupportsWebSearch:  c.opts.Dialect == "responses",
 	}
 }
 

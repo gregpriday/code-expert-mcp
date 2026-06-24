@@ -51,6 +51,39 @@ type FunctionTool struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// BuiltinToolType names a provider-hosted tool that runs server-side (as opposed
+// to a FunctionTool the engine executes locally). Only the dialect translators
+// interpret these; workflow code never executes them.
+type BuiltinToolType string
+
+const (
+	// BuiltinToolWebSearch is the OpenAI Responses API built-in web search tool.
+	BuiltinToolWebSearch BuiltinToolType = "web_search"
+)
+
+// BuiltinTool requests a provider-hosted built-in tool for a single call. The
+// search executes entirely server-side; no outbound connection leaves this
+// process. Only supported on the Responses dialect.
+type BuiltinTool struct {
+	Type BuiltinToolType
+	// SearchContextSize tunes how much retrieved context the search may use:
+	// "low" | "medium" | "high". Empty leaves the provider default.
+	SearchContextSize string
+	// AllowedDomains and BlockedDomains optionally constrain which hosts the
+	// search may draw from. Bare hostnames only (no scheme, no path).
+	AllowedDomains []string
+	BlockedDomains []string
+}
+
+// URLCitation is a single source citation attached to web-search output. Offsets
+// index into the response Text.
+type URLCitation struct {
+	URL        string `json:"url"`
+	Title      string `json:"title,omitempty"`
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
+}
+
 // ToolChoiceMode controls whether/which tools the model may call.
 type ToolChoiceMode string
 
@@ -76,10 +109,13 @@ type JSONSchema struct {
 
 // GenerationRequest is a single provider-neutral model call.
 type GenerationRequest struct {
-	Model           string
-	Instructions    string // system-level rules
-	Input           []Message
-	Tools           []FunctionTool
+	Model        string
+	Instructions string // system-level rules
+	Input        []Message
+	Tools        []FunctionTool
+	// BuiltinTools requests provider-hosted built-in tools (e.g. web search) for
+	// this call. Responses dialect only; the chat-completions dialect rejects them.
+	BuiltinTools    []BuiltinTool
 	ToolChoice      ToolChoice
 	OutputSchema    *JSONSchema
 	MaxOutputTokens int
@@ -121,7 +157,10 @@ type GenerationResponse struct {
 	// recorded on the assistant Message and replayed on the next request. See
 	// Message.ProviderItems. Empty for dialects that do not use output items.
 	ProviderItems []json.RawMessage `json:"provider_items,omitempty"`
-	Raw           map[string]any    `json:"-"`
+	// URLCitations holds source citations extracted from built-in web-search
+	// output. Empty when no web search ran. These are UNTRUSTED external sources.
+	URLCitations []URLCitation  `json:"url_citations,omitempty"`
+	Raw          map[string]any `json:"-"`
 }
 
 // ModelInfo is a discovered model from the provider's /models endpoint.
@@ -139,6 +178,7 @@ type ProviderCapabilities struct {
 	SupportsStructured bool   `json:"supports_structured_output"`
 	SupportsStreaming  bool   `json:"supports_streaming"`
 	SupportsReasoning  bool   `json:"supports_reasoning"`
+	SupportsWebSearch  bool   `json:"supports_web_search"`
 }
 
 // Provider is the model backend abstraction. Implementations must be safe for

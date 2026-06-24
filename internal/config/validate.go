@@ -157,6 +157,58 @@ func Validate(c *Config) error {
 		return schema.NewError(schema.CodeConfigInvalid, "retrieval.summaries %q must be off, on-demand, or eager", c.Retrieval.Summaries)
 	}
 
+	// Grounding (web-search) tool.
+	if err := validateGrounding(c); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateGrounding checks the optional web-search grounding configuration. The
+// search-context size must be a known level and any domain filters must be bare
+// hostnames, matching the provider's documented filter format.
+func validateGrounding(c *Config) error {
+	switch c.Grounding.SearchContextSize {
+	case "", "low", "medium", "high":
+	default:
+		return schema.NewError(schema.CodeConfigInvalid,
+			"grounding.search_context_size %q must be low, medium, or high", c.Grounding.SearchContextSize)
+	}
+	const maxDomains = 100
+	if len(c.Grounding.AllowedDomains)+len(c.Grounding.BlockedDomains) > maxDomains {
+		return schema.NewError(schema.CodeConfigInvalid,
+			"grounding allowed_domains + blocked_domains must not exceed %d entries", maxDomains)
+	}
+	for _, field := range []struct {
+		label   string
+		domains []string
+	}{
+		{"grounding.allowed_domains", c.Grounding.AllowedDomains},
+		{"grounding.blocked_domains", c.Grounding.BlockedDomains},
+	} {
+		for _, d := range field.domains {
+			if err := validateBareHost(field.label, d); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateBareHost rejects domain-filter entries that carry a scheme, path, port,
+// or whitespace; the provider expects bare hostnames such as "example.com".
+func validateBareHost(label, host string) error {
+	if strings.TrimSpace(host) == "" {
+		return schema.NewError(schema.CodeConfigInvalid, "%s contains an empty domain", label)
+	}
+	if host != strings.TrimSpace(host) || strings.ContainsAny(host, " \t\r\n") {
+		return schema.NewError(schema.CodeConfigInvalid, "%s %q must not contain whitespace", label, host)
+	}
+	if strings.Contains(host, "://") || strings.ContainsAny(host, "/?#:") {
+		return schema.NewError(schema.CodeConfigInvalid,
+			"%s %q must be a bare hostname (no scheme, path, or port)", label, host)
+	}
 	return nil
 }
 

@@ -71,6 +71,27 @@ func TestChatStreamUsageParsed(t *testing.T) {
 	}
 }
 
+// TestChatRejectsBuiltinTools confirms the chat-completions dialect refuses
+// built-in tools (web_search) instead of silently dropping them, since the
+// dialect cannot execute them.
+func TestChatRejectsBuiltinTools(t *testing.T) {
+	c, err := New(Options{BaseURL: "https://example.com/v1", Dialect: "chat-completions", MaxRetries: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Generate(context.Background(), provider.GenerationRequest{
+		Model:        "m",
+		Input:        []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		BuiltinTools: []provider.BuiltinTool{{Type: provider.BuiltinToolWebSearch}},
+	})
+	if err == nil {
+		t.Fatal("expected chat dialect to reject built-in tools")
+	}
+	if code := schema.AsToolError(err).Code; code != schema.CodeProviderUnsupported {
+		t.Errorf("error code = %s, want %s", code, schema.CodeProviderUnsupported)
+	}
+}
+
 func TestStreamIdleTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -58,6 +58,8 @@ func makeID(rec schema.EvidenceRecord) string {
 		return "E-history-" + slugPath(rec.Path) + "-" + digest
 	case schema.EvidenceKindGuidance:
 		return "E-guidance-" + slugPath(rec.Path) + "-" + digest
+	case schema.EvidenceKindGrounding:
+		return "E-grounding-" + slugSymbol(rec.Provenance.Query) + "-" + digest
 	default:
 		return "E-" + string(rec.Kind) + "-" + digest
 	}

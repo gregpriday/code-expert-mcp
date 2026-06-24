@@ -94,7 +94,7 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 
 	reg := llmtools.New(llmtools.Options{
 		Snapshot: snap, Evidence: evid, Budget: tracker, Config: e.Cfg,
-		Guidance: guidance, Logger: e.Log,
+		Guidance: guidance, Provider: e.Provider, Logger: e.Log,
 	})
 
 	// Exploration with the scout model and read-only tools.

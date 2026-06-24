@@ -64,6 +64,54 @@ func TestValidateRejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBadSearchContextSize(t *testing.T) {
+	c := Defaults()
+	c.Grounding.Enabled = true
+	c.Grounding.SearchContextSize = "huge"
+	if err := Validate(&c); err == nil {
+		t.Fatal("expected rejection of an invalid grounding.search_context_size")
+	}
+}
+
+func TestValidateRejectsDomainWithScheme(t *testing.T) {
+	c := Defaults()
+	c.Grounding.AllowedDomains = []string{"https://go.dev"}
+	if err := Validate(&c); err == nil {
+		t.Fatal("expected rejection of a domain filter carrying a scheme")
+	}
+}
+
+func TestValidateRejectsDomainWithPath(t *testing.T) {
+	c := Defaults()
+	c.Grounding.BlockedDomains = []string{"go.dev/doc"}
+	if err := Validate(&c); err == nil {
+		t.Fatal("expected rejection of a domain filter carrying a path")
+	}
+}
+
+func TestValidateAcceptsBareDomains(t *testing.T) {
+	c := Defaults()
+	c.Grounding.Enabled = true
+	c.Grounding.SearchContextSize = "high"
+	c.Grounding.AllowedDomains = []string{"go.dev", "pkg.go.dev"}
+	c.Grounding.BlockedDomains = []string{"spam.example"}
+	if err := Validate(&c); err != nil {
+		t.Fatalf("bare domains should validate: %v", err)
+	}
+}
+
+func TestValidateRejectsTooManyDomains(t *testing.T) {
+	c := Defaults()
+	domains := make([]string, 101)
+	for i := range domains {
+		domains[i] = "d.example"
+	}
+	c.Grounding.AllowedDomains = domains
+	if err := Validate(&c); err == nil {
+		t.Fatal("expected rejection of more than 100 domain filters")
+	}
+}
+
 func TestDurationParsesDays(t *testing.T) {
 	var d Duration
 	if err := d.UnmarshalText([]byte("7d")); err != nil {

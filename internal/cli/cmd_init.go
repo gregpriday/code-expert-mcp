@@ -159,7 +159,9 @@ func renderV2Template(p presetDefaults, api string, comments bool) string {
 	c("# Maximum model calls per analysis profile (0 = no limit). A per-request\n# budget overrides these.\n")
 	b.WriteString("[profile_limits]\nmax_model_calls_fast = 3\nmax_model_calls_balanced = 7\nmax_model_calls_deep = 12\n\n")
 	c("# External checks are OFF by default. When enabled, commands run in an\n# isolated copy of the snapshot, never in your working tree.\n")
-	b.WriteString("[checks]\nmode = \"off\"\nnetwork = false\n")
+	b.WriteString("[checks]\nmode = \"off\"\nnetwork = false\n\n")
+	c("# Web-search grounding is OFF by default. When enabled (responses dialect\n# only), the model may run a provider-side web search; results fold back as\n# UNTRUSTED external content. search_context_size: low | medium | high.\n")
+	b.WriteString("[grounding]\nenabled = false\nsearch_context_size = \"medium\"\n")
 	return b.String()
 }
 
