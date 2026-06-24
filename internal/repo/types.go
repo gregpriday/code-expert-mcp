@@ -61,6 +61,7 @@ type ChangedFile struct {
 	Added     int         `json:"added"`
 	Deleted   int         `json:"deleted"`
 	Binary    bool        `json:"binary"`
+	Untracked bool        `json:"untracked,omitempty"`
 	Generated bool        `json:"generated"`
 	Vendored  bool        `json:"vendored"`
 	Language  string      `json:"language"`

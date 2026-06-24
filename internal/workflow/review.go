@@ -105,7 +105,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 		progress("verification", "verifying candidates")
 		model, effort := e.routedSynthesisModel("review_verify", profile, complexity, highRisk)
 		verified := e.verifyCandidates(ctx, rs, deduped, evid, model, effort, tracker, usage)
-		survivors := applyGates(verified, snap, evid, changedRanges, e.Cfg, req.Policy, &suppressed)
+		survivors := applyGates(verified, snap, evid, changedRanges, deletedPaths(manifest), e.Cfg, req.Policy, &suppressed)
 
 		// Finalize (rank/phrase only survivors).
 		progress("synthesis", "finalizing findings")
@@ -193,14 +193,14 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 	return result
 }
 
-// reviewableFiles filters the manifest to files in scope for review.
+// reviewableFiles filters the manifest to files in scope for review. Deletions
+// stay in scope: a removed API, migration, security check, or test is exactly the
+// kind of change a reviewer must catch, and the removed lines are carried in the
+// frozen diff even though there is nothing left in the head to read.
 func reviewableFiles(m *repo.ChangeManifest, cfg config.Config, policy schema.ReviewPolicy) []repo.ChangedFile {
 	includeGen := cfg.Review.IncludeGenerated || policy.IncludeGenerated
 	var out []repo.ChangedFile
 	for _, f := range m.Files {
-		if f.Status == "D" {
-			continue // deletions: nothing in head to review
-		}
 		if f.Binary {
 			continue
 		}
@@ -211,6 +211,19 @@ func reviewableFiles(m *repo.ChangeManifest, cfg config.Config, policy schema.Re
 			continue
 		}
 		out = append(out, f)
+	}
+	return out
+}
+
+// deletedPaths returns the set of paths removed by the change set, so the
+// publication gates can attribute a finding to a deleted file (whose lines live
+// only in the base) instead of dropping it for failing head-existence checks.
+func deletedPaths(m *repo.ChangeManifest) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range m.Files {
+		if f.Status == "D" {
+			out[f.Path] = true
+		}
 	}
 	return out
 }
@@ -326,20 +339,34 @@ func riskRationale(cat schema.FindingCategory) string {
 	}
 }
 
+// buildCoverage assigns every changed file a terminal state. A file is "reviewed"
+// only if it was actually fed to the candidate passes (non-binary, non-vendored,
+// in policy) — deletions included, since their removed content is reviewed via
+// the frozen diff. Excluded files carry the policy reason. Coverage is derived
+// from what was demonstrably handled, not from mere manifest membership.
 func buildCoverage(m *repo.ChangeManifest, cfg config.Config, riskMap []schema.RiskArea, findings []schema.ReviewFinding) schema.ReviewCoverage {
 	cov := schema.ReviewCoverage{}
 	includeGen := cfg.Review.IncludeGenerated
+	add := func(f repo.ChangedFile, state schema.CoverageState, reason string) {
+		cov.Files = append(cov.Files, schema.FileCoverage{Path: f.Path, Status: f.Status, State: state, Reason: reason})
+	}
 	for _, f := range m.Files {
 		switch {
-		case f.Status == "D":
-			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "deleted"})
 		case f.Binary:
+			add(f, schema.CoverageUnsupported, "binary content")
 			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "binary"})
 		case f.Vendored:
+			add(f, schema.CoverageVendored, "vendored dependency")
 			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "vendored"})
 		case f.Generated && !includeGen:
+			add(f, schema.CoverageExcluded, "generated file (set review.include_generated to review)")
 			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "generated"})
 		default:
+			reason := ""
+			if f.Status == "D" {
+				reason = "deletion reviewed via removed content"
+			}
+			add(f, schema.CoverageReviewed, reason)
 			cov.ReviewedFiles = append(cov.ReviewedFiles, f.Path)
 			cov.ChangedLineEstimate += f.Added + f.Deleted
 		}

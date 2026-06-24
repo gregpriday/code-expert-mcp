@@ -104,7 +104,7 @@ func TestApplyGatesSuppressionReasons(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			evid := evidence.NewStore(snap.ID())
 			stats := &schema.SuppressionStats{ByReason: map[string]int{}}
-			survivors := applyGates([]verifiedCandidate{tc.vc}, snap, evid, changed, cfg, tc.policy, stats)
+			survivors := applyGates([]verifiedCandidate{tc.vc}, snap, evid, changed, nil, cfg, tc.policy, stats)
 			if tc.reason == "" {
 				if len(survivors) != 1 {
 					t.Fatalf("expected 1 survivor, got %d (suppressed %+v)", len(survivors), stats.ByReason)
@@ -135,7 +135,7 @@ func TestApplyGatesBlockingCapDemotes(t *testing.T) {
 		in = append(in, mkVerified(mkCandidate(rel, 1+i, 1+i, schema.CategoryCorrectness, "fix it"), true, schema.EvidenceCodePath, true))
 	}
 	policy := schema.ReviewPolicy{MaxBlockingFindings: 2, MaxTotalFindings: 3}
-	survivors := applyGates(in, snap, evid, changed, cfg, policy, stats)
+	survivors := applyGates(in, snap, evid, changed, nil, cfg, policy, stats)
 	if len(survivors) != 3 {
 		t.Fatalf("expected 3 survivors after total cap, got %d", len(survivors))
 	}
@@ -194,7 +194,7 @@ func TestApplyGatesUsesLineOverlapTolerance(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Review.LineOverlapTolerance = 0
 	stats := &schema.SuppressionStats{ByReason: map[string]int{}}
-	if got := applyGates([]verifiedCandidate{vc}, snap, evidence.NewStore(snap.ID()), changed, cfg, schema.ReviewPolicy{}, stats); len(got) != 0 {
+	if got := applyGates([]verifiedCandidate{vc}, snap, evidence.NewStore(snap.ID()), changed, nil, cfg, schema.ReviewPolicy{}, stats); len(got) != 0 {
 		t.Fatalf("tol=0 should suppress a finding two lines outside the hunk, %d survived", len(got))
 	}
 	if stats.ByReason["outside_change"] != 1 {
@@ -204,8 +204,36 @@ func TestApplyGatesUsesLineOverlapTolerance(t *testing.T) {
 	// tol = 2: the same finding is within tolerance and survives.
 	cfg.Review.LineOverlapTolerance = 2
 	stats = &schema.SuppressionStats{ByReason: map[string]int{}}
-	if got := applyGates([]verifiedCandidate{vc}, snap, evidence.NewStore(snap.ID()), changed, cfg, schema.ReviewPolicy{}, stats); len(got) != 1 {
+	if got := applyGates([]verifiedCandidate{vc}, snap, evidence.NewStore(snap.ID()), changed, nil, cfg, schema.ReviewPolicy{}, stats); len(got) != 1 {
 		t.Fatalf("tol=2 should keep a finding within tolerance, got %d (suppressed %+v)", len(got), stats.ByReason)
+	}
+}
+
+// TestApplyGatesAcceptsDeletionFindings proves a finding attributed to a deleted
+// file survives on path identity (its lines live only in the base) instead of
+// being dropped for failing the head-existence and changed-range gates.
+func TestApplyGatesAcceptsDeletionFindings(t *testing.T) {
+	snap, _ := testSnapshot(t)
+	cfg := config.Defaults()
+	evid := evidence.NewStore(snap.ID())
+	// A finding on a file that no longer exists in the head snapshot.
+	vc := mkVerified(mkCandidate("removed/api.go", 10, 12, schema.CategorySecurity, "restore the auth check"),
+		true, schema.EvidenceCodePath, true)
+
+	// Without deletion context the head-existence gate drops it.
+	stats := &schema.SuppressionStats{ByReason: map[string]int{}}
+	if got := applyGates([]verifiedCandidate{vc}, snap, evid, nil, nil, cfg, schema.ReviewPolicy{}, stats); len(got) != 0 {
+		t.Fatalf("a finding on a non-existent path should be suppressed without deletion context, %d survived", len(got))
+	}
+	if stats.ByReason["invalid_location"] != 1 {
+		t.Errorf("expected invalid_location suppression, got %+v", stats.ByReason)
+	}
+
+	// Marked as a deletion, it is accepted as a removed-content finding.
+	stats = &schema.SuppressionStats{ByReason: map[string]int{}}
+	deleted := map[string]bool{"removed/api.go": true}
+	if got := applyGates([]verifiedCandidate{vc}, snap, evid, nil, deleted, cfg, schema.ReviewPolicy{}, stats); len(got) != 1 {
+		t.Fatalf("deletion finding should survive, got %d (suppressed %+v)", len(got), stats.ByReason)
 	}
 }
 

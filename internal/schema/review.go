@@ -55,15 +55,38 @@ type RiskArea struct {
 	Priority  int             `json:"priority"`
 }
 
-// ReviewCoverage reports what was and was not reviewed.
+// ReviewCoverage reports what was and was not reviewed. Files carries a terminal
+// state for every changed file so coverage reflects what was demonstrably handled
+// rather than mere manifest membership.
 type ReviewCoverage struct {
-	ReviewedFiles       []string      `json:"reviewed_files"`
-	SkippedFiles        []SkippedFile `json:"skipped_files,omitempty"`
-	ChangedLineEstimate int           `json:"changed_line_estimate"`
-	SpecialistPasses    []string      `json:"specialist_passes,omitempty"`
-	ChecksRun           []string      `json:"checks_run,omitempty"`
-	Unindexed           []string      `json:"unindexed,omitempty"`
-	BudgetLimited       bool          `json:"budget_limited"`
+	Files               []FileCoverage `json:"files,omitempty"`
+	ReviewedFiles       []string       `json:"reviewed_files"`
+	SkippedFiles        []SkippedFile  `json:"skipped_files,omitempty"`
+	ChangedLineEstimate int            `json:"changed_line_estimate"`
+	SpecialistPasses    []string       `json:"specialist_passes,omitempty"`
+	ChecksRun           []string       `json:"checks_run,omitempty"`
+	Unindexed           []string       `json:"unindexed,omitempty"`
+	BudgetLimited       bool           `json:"budget_limited"`
+}
+
+// CoverageState is the terminal state of one changed file in a review.
+type CoverageState string
+
+const (
+	CoverageReviewed    CoverageState = "reviewed"           // sent through the candidate passes
+	CoverageExcluded    CoverageState = "excluded-by-policy" // generated/style excluded by config or policy
+	CoverageUnsupported CoverageState = "unsupported-binary" // binary content the text passes cannot read
+	CoverageVendored    CoverageState = "vendored"           // vendored dependency, out of scope
+	CoverageTruncated   CoverageState = "truncated"          // reviewed, but its diff was capped for size
+	CoverageFailed      CoverageState = "failed"             // a pass errored before covering it
+)
+
+// FileCoverage is the terminal review state of one changed file.
+type FileCoverage struct {
+	Path   string        `json:"path"`
+	Status string        `json:"status,omitempty"` // git status letter (A/M/D/R/C)
+	State  CoverageState `json:"state"`
+	Reason string        `json:"reason,omitempty"`
 }
 
 // SkippedFile records a file omitted from review and why.

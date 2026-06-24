@@ -2,14 +2,17 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gregpriday/codeexpert/internal/config"
 	"github.com/gregpriday/codeexpert/internal/provider"
+	"github.com/gregpriday/codeexpert/internal/repo"
 	"github.com/gregpriday/codeexpert/internal/schema"
 	"github.com/gregpriday/codeexpert/internal/telemetry"
 )
@@ -103,5 +106,53 @@ func TestRunCandidatePassesCancellation(t *testing.T) {
 	// none ran on or leaked. (Review has returned, so all goroutines are done.)
 	if in, out := prov.inFlight.Load(), prov.cancelled.Load(); in != out || in == 0 {
 		t.Errorf("in-flight passes = %d, cancelled-returns = %d; want equal and non-zero", in, out)
+	}
+}
+
+// TestBuildDiffBlockKeepsEveryFile proves the per-file partition never silently
+// drops a changed file: with many files each still appears with its header, even
+// when the total diff budget is exhausted (the old single-string truncation
+// broke out of the loop and lost every later file).
+func TestBuildDiffBlockKeepsEveryFile(t *testing.T) {
+	bigHunk := "@@ -1,1 +1,400 @@\n"
+	for i := 0; i < 400; i++ {
+		bigHunk += "+a line of added content that is reasonably long to consume budget\n"
+	}
+	m := &repo.ChangeManifest{Target: "working_tree", BaseLabel: "HEAD", HeadLabel: "wt"}
+	for i := 0; i < 60; i++ {
+		m.Files = append(m.Files, repo.ChangedFile{
+			Path: fmt.Sprintf("pkg/file%02d.go", i), Status: "M", Added: 400, Diff: bigHunk,
+		})
+	}
+	out := buildDiffBlock(m)
+	for i := 0; i < 60; i++ {
+		if !strings.Contains(out, fmt.Sprintf("pkg/file%02d.go", i)) {
+			t.Fatalf("file%02d.go disappeared from the diff block — a changed file was silently dropped", i)
+		}
+	}
+	// And the total stays bounded rather than embedding 60*~25KB of diff.
+	if len(out) > diffBlockBudget*2 {
+		t.Errorf("diff block size %d exceeds twice the budget %d", len(out), diffBlockBudget)
+	}
+}
+
+// TestReviewableFilesIncludesDeletions proves deletions stay in review scope.
+func TestReviewableFilesIncludesDeletions(t *testing.T) {
+	m := &repo.ChangeManifest{Files: []repo.ChangedFile{
+		{Path: "kept.go", Status: "M"},
+		{Path: "removed.go", Status: "D"},
+		{Path: "vendor/dep.go", Status: "D", Vendored: true},
+		{Path: "image.png", Status: "A", Binary: true},
+	}}
+	got := reviewableFiles(m, config.Defaults(), schema.ReviewPolicy{})
+	paths := map[string]bool{}
+	for _, f := range got {
+		paths[f.Path] = true
+	}
+	if !paths["removed.go"] {
+		t.Error("a source deletion must remain reviewable")
+	}
+	if paths["vendor/dep.go"] || paths["image.png"] {
+		t.Error("vendored/binary files must stay out of scope")
 	}
 }

@@ -115,7 +115,7 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 // applyGates enforces the deterministic publication gates and policy limits,
 // recording suppression reasons.
 func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidence.Store, changed map[string][]repo.LineRange,
-	cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
+	deleted map[string]bool, cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
 
 	val := evidence.NewValidator(snap)
 	minLevel := minEvidenceLevel(cfg, policy)
@@ -131,21 +131,33 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 			suppress("verifier_rejected")
 			continue
 		}
-		if vc.cand.Location.Path == "" || !val.FileExists(vc.cand.Location.Path) {
+		if vc.cand.Location.Path == "" {
 			suppress("invalid_location")
 			continue
 		}
-		if err := val.ValidateLocation(nil, vc.cand.Location.Path, vc.cand.Location.StartLine, vc.cand.Location.EndLine); err != nil {
-			suppress("invalid_location")
-			continue
-		}
-		// Deterministic changed-line attribution: a finding must point inside (or
-		// adjacent to) a changed hunk. Files with no recorded ranges (e.g. newly
-		// added or untracked) cannot be attributed deterministically, so they
-		// fall through to the verifier's judgment rather than being dropped.
-		if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine, cfg.Review.LineOverlapTolerance) {
-			suppress("outside_change")
-			continue
+		// A finding attributed to a deleted file cannot be validated against the
+		// head (the file is gone) or against changed head ranges (there are none).
+		// Its lines live only in the base, so accept it on path identity alone —
+		// it is a finding about removed content, which is exactly what we want to
+		// surface — and skip the head-oriented location and attribution gates.
+		isDeletion := deleted[vc.cand.Location.Path]
+		if !isDeletion {
+			if !val.FileExists(vc.cand.Location.Path) {
+				suppress("invalid_location")
+				continue
+			}
+			if err := val.ValidateLocation(nil, vc.cand.Location.Path, vc.cand.Location.StartLine, vc.cand.Location.EndLine); err != nil {
+				suppress("invalid_location")
+				continue
+			}
+			// Deterministic changed-line attribution: a finding must point inside
+			// (or adjacent to) a changed hunk. Files with no recorded ranges (e.g.
+			// newly added or untracked) cannot be attributed deterministically, so
+			// they fall through to the verifier's judgment rather than being dropped.
+			if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine, cfg.Review.LineOverlapTolerance) {
+				suppress("outside_change")
+				continue
+			}
 		}
 		if vc.cand.Category == schema.CategoryStyle && !includeStyle {
 			suppress("style_disabled")

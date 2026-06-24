@@ -219,33 +219,80 @@ func symbolOverlapsRanges(start, end int, ranges []repo.LineRange) bool {
 	return false
 }
 
+// diffBlockBudget bounds the total frozen-diff text embedded in the shared
+// candidate message; diffBlockMinPerFile is the floor each file is guaranteed so
+// a large early file cannot starve later ones.
+const (
+	diffBlockBudget     = 48000
+	diffBlockMinPerFile = 1200
+	diffBlockMaxPerFile = 6000
+)
+
+// buildDiffBlock renders the frozen change set for the candidate passes. Unlike
+// the old single-string truncation (which broke out of the loop and silently
+// dropped every later file), it partitions a bounded budget fairly across files:
+// every in-scope file appears with its header, and when the budget runs out a
+// file is shown header-only with an explicit pointer to fetch its diff via tools,
+// so no changed file can disappear from the review input.
 func buildDiffBlock(m *repo.ChangeManifest) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Target: %s (base %s -> head %s)\n", m.Target, m.BaseLabel, m.HeadLabel)
-	fmt.Fprintf(&b, "Changed files: %d (+%d/-%d)\n\n", len(m.Files), m.TotalAdded, m.TotalDeleted)
-	size := 0
+	var files []repo.ChangedFile
 	for _, f := range m.Files {
 		if f.Binary || f.Vendored {
 			continue
 		}
+		files = append(files, f)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Target: %s (base %s -> head %s)\n", m.Target, m.BaseLabel, m.HeadLabel)
+	fmt.Fprintf(&b, "Changed files: %d (+%d/-%d)\n\n", len(m.Files), m.TotalAdded, m.TotalDeleted)
+	if len(files) == 0 {
+		return b.String()
+	}
+
+	perFile := diffBlockBudget / len(files)
+	if perFile > diffBlockMaxPerFile {
+		perFile = diffBlockMaxPerFile
+	}
+	if perFile < diffBlockMinPerFile {
+		perFile = diffBlockMinPerFile
+	}
+
+	used := 0
+	for _, f := range files {
 		fmt.Fprintf(&b, "### %s (%s, +%d/-%d)\n", f.Path, f.Status, f.Added, f.Deleted)
+		if f.Status == "D" {
+			b.WriteString("(file deleted — the diff below is the removed content; review what its removal breaks)\n")
+		}
 		if len(f.Symbols) > 0 {
 			fmt.Fprintf(&b, "Enclosing changed symbols: %s\n", strings.Join(f.Symbols, ", "))
 		}
-		if f.Diff != "" {
-			diff := f.Diff
-			if len(diff) > 6000 {
-				diff = diff[:6000] + "\n…(diff truncated)…"
-			}
-			b.WriteString("```diff\n")
-			b.WriteString(diff)
-			b.WriteString("\n```\n")
-			size += len(diff)
+		if f.Diff == "" {
+			b.WriteString("(no textual diff available; fetch with repo_git_diff if needed)\n\n")
+			continue
 		}
-		if size > 40000 {
-			b.WriteString("\n…(remaining diffs omitted for size; use repo_git_diff to fetch them)…\n")
-			break
+		remaining := diffBlockBudget - used
+		if remaining <= 0 {
+			b.WriteString("(diff omitted to stay within the size budget; fetch it with repo_git_diff)\n\n")
+			continue
 		}
+		share := perFile
+		if share > remaining {
+			share = remaining
+		}
+		diff := f.Diff
+		truncated := false
+		if len(diff) > share {
+			diff = diff[:share]
+			truncated = true
+		}
+		used += len(diff)
+		b.WriteString("```diff\n")
+		b.WriteString(diff)
+		if truncated {
+			b.WriteString("\n…(diff truncated; fetch the full hunk with repo_git_diff)…")
+		}
+		b.WriteString("\n```\n\n")
 	}
 	return b.String()
 }
