@@ -143,6 +143,10 @@ type chatUsage struct {
 }
 
 func (c *Client) generateChat(ctx context.Context, req provider.GenerationRequest) (provider.GenerationResponse, error) {
+	if len(req.BuiltinTools) > 0 {
+		return provider.GenerationResponse{}, schema.NewError(schema.CodeProviderUnsupported,
+			"built-in tools (e.g. web_search) are not supported on the chat-completions dialect; use the responses dialect")
+	}
 	body := c.buildChatRequest(req)
 	var result provider.GenerationResponse
 	err := c.retry.Do(ctx, func() error {

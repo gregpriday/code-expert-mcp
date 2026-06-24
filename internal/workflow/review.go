@@ -64,7 +64,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 
 	reg := llmtools.New(llmtools.Options{
 		Snapshot: snap, Review: rs, Evidence: evid, Budget: tracker, Config: e.Cfg,
-		Guidance: guidance, Logger: e.Log,
+		Guidance: guidance, Provider: e.Provider, Logger: e.Log,
 	})
 
 	// Deterministic risk map.

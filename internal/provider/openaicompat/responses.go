@@ -51,6 +51,11 @@ func (c *Client) buildResponsesRequest(req provider.GenerationRequest) responses
 			"parameters":  json.RawMessage(t.Parameters),
 		})
 	}
+	for _, bt := range req.BuiltinTools {
+		if bt.Type == provider.BuiltinToolWebSearch {
+			rr.Tools = append(rr.Tools, webSearchTool(bt))
+		}
+	}
 	if tc := translateToolChoice(req.ToolChoice); tc != nil {
 		rr.ToolChoice = tc
 	}
@@ -65,6 +70,26 @@ func (c *Client) buildResponsesRequest(req provider.GenerationRequest) responses
 		}
 	}
 	return rr
+}
+
+// webSearchTool builds the Responses built-in web_search tool entry, attaching
+// the optional search-context size and domain filters when set.
+func webSearchTool(bt provider.BuiltinTool) map[string]any {
+	t := map[string]any{"type": "web_search"}
+	if bt.SearchContextSize != "" {
+		t["search_context_size"] = bt.SearchContextSize
+	}
+	filters := map[string]any{}
+	if len(bt.AllowedDomains) > 0 {
+		filters["allowed_domains"] = bt.AllowedDomains
+	}
+	if len(bt.BlockedDomains) > 0 {
+		filters["blocked_domains"] = bt.BlockedDomains
+	}
+	if len(filters) > 0 {
+		t["filters"] = filters
+	}
+	return t
 }
 
 // translateInput converts provider-neutral messages into Responses input items.
@@ -166,9 +191,16 @@ type responsesItem struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Content   []struct {
-		Type    string `json:"type"`
-		Text    string `json:"text"`
-		Refusal string `json:"refusal"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		Refusal     string `json:"refusal"`
+		Annotations []struct {
+			Type       string `json:"type"`
+			URL        string `json:"url"`
+			Title      string `json:"title"`
+			StartIndex int    `json:"start_index"`
+			EndIndex   int    `json:"end_index"`
+		} `json:"annotations"`
 	} `json:"content"`
 }
 
@@ -287,6 +319,7 @@ func parseResponsesEnvelope(env *responsesEnvelope, req provider.GenerationReque
 	var text string
 	var refusal string
 	var calls []provider.ToolCall
+	var citations []provider.URLCitation
 	// Capture every output item verbatim so reasoning items (and anything else the
 	// dialect emits) survive the round trip and can be replayed on the next
 	// request. Order is preserved.
@@ -306,9 +339,20 @@ func parseResponsesEnvelope(env *responsesEnvelope, req provider.GenerationReque
 				case "refusal":
 					refusal += ct.Refusal
 				}
+				for _, an := range ct.Annotations {
+					if an.Type == "url_citation" && an.URL != "" {
+						citations = append(citations, provider.URLCitation{
+							URL: an.URL, Title: an.Title,
+							StartIndex: an.StartIndex, EndIndex: an.EndIndex,
+						})
+					}
+				}
 			}
 		case "function_call":
 			calls = append(calls, provider.ToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
+			// web_search_call (and any other built-in invocation item) is captured
+			// verbatim in ProviderItems above; it is deliberately not surfaced as a
+			// function ToolCall or text so it never re-enters the session as one.
 		}
 	}
 	finish := env.Status
@@ -329,6 +373,7 @@ func parseResponsesEnvelope(env *responsesEnvelope, req provider.GenerationReque
 	out := provider.GenerationResponse{
 		Text:          text,
 		ToolCalls:     calls,
+		URLCitations:  citations,
 		ProviderItems: items,
 		ModelID:       env.Model,
 		RequestID:     env.ID,

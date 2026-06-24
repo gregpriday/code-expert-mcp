@@ -30,6 +30,7 @@ type Config struct {
 	Plan       PlanConfig       `toml:"plan"`
 	Review     ReviewConfig     `toml:"review"`
 	Checks     ChecksConfig     `toml:"checks"`
+	Grounding  GroundingConfig  `toml:"grounding"`
 
 	// ProfileLimits sets the per-profile model-call ceilings the engine enforces.
 	ProfileLimits ProfileLimitsConfig `toml:"profile_limits"`
@@ -257,6 +258,21 @@ type ProfileLimitsConfig struct {
 	MaxModelCallsFast     int `toml:"max_model_calls_fast"`
 	MaxModelCallsBalanced int `toml:"max_model_calls_balanced"`
 	MaxModelCallsDeep     int `toml:"max_model_calls_deep"`
+}
+
+// GroundingConfig gates the optional web-search grounding tool. When enabled the
+// model may call a read-only tool that performs a provider-side web search (the
+// OpenAI Responses built-in web_search) and folds the result back as UNTRUSTED
+// external content. Disabled by default; requires the responses dialect.
+type GroundingConfig struct {
+	Enabled bool `toml:"enabled"`
+	// SearchContextSize tunes retrieval depth: low | medium | high. Empty leaves
+	// the provider default.
+	SearchContextSize string `toml:"search_context_size"`
+	// AllowedDomains and BlockedDomains optionally constrain the search. Bare
+	// hostnames only (no scheme, no path).
+	AllowedDomains []string `toml:"allowed_domains"`
+	BlockedDomains []string `toml:"blocked_domains"`
 }
 
 // ChecksConfig configures the external check runner.

@@ -132,6 +132,9 @@ const (
 	EvidenceKindCheck    EvidenceKind = "check"
 	EvidenceKindHistory  EvidenceKind = "history"
 	EvidenceKindGuidance EvidenceKind = "guidance"
+	// EvidenceKindGrounding labels external web-search results folded back into a
+	// run. Like all tool output it is UNTRUSTED external content.
+	EvidenceKindGrounding EvidenceKind = "grounding"
 )
 
 // Confidence is a coarse qualitative confidence used in help reports.

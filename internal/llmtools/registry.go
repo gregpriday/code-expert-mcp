@@ -37,6 +37,7 @@ type Registry struct {
 	cfg      config.Config
 	guidance []repo.Guidance
 	checks   CheckRunner
+	prov     provider.Provider // nil disables the grounding tool
 	log      *telemetry.Logger
 
 	tools map[string]tool
@@ -59,6 +60,10 @@ type Options struct {
 	Config   config.Config
 	Guidance []repo.Guidance
 	Checks   CheckRunner
+	// Provider, when set together with Config.Grounding.Enabled, enables the
+	// read-only web-search grounding tool. The tool issues a separate provider
+	// call; it is never used to mutate anything.
+	Provider provider.Provider
 	Logger   *telemetry.Logger
 }
 
@@ -77,6 +82,7 @@ func New(opts Options) *Registry {
 		cfg:      opts.Config,
 		guidance: opts.Guidance,
 		checks:   opts.Checks,
+		prov:     opts.Provider,
 		log:      log,
 		lex: index.NewLexicalEngine(opts.Snapshot, opts.Config.Retrieval.SearchResultLimit,
 			index.WithTrigramFilter(opts.Config.Retrieval.TrigramFilter, opts.Config.Retrieval.TrigramMaxPerFile)),
@@ -86,6 +92,9 @@ func New(opts Options) *Registry {
 	r.registerCommon()
 	if r.review != nil {
 		r.registerReview()
+	}
+	if r.cfg.Grounding.Enabled && r.prov != nil {
+		r.registerGrounding()
 	}
 	return r
 }

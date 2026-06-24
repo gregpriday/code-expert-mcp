@@ -2,6 +2,8 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -153,6 +155,152 @@ func TestResponsesRefusalSurfaced(t *testing.T) {
 	}
 	if !strings.Contains(resp.Text, "can't help") {
 		t.Errorf("refusal text not captured: %q", resp.Text)
+	}
+}
+
+// TestWebSearchBuiltinSerialized asserts a BuiltinToolWebSearch request appends a
+// {"type":"web_search"} tool entry carrying the search-context size and domain
+// filters, alongside any function tools.
+func TestWebSearchBuiltinSerialized(t *testing.T) {
+	c, err := New(Options{BaseURL: "https://example.com/v1", Dialect: "responses"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := c.buildResponsesRequest(provider.GenerationRequest{
+		Model: "fugu",
+		Input: []provider.Message{{Role: provider.RoleUser, Content: "go 1.23 release date"}},
+		BuiltinTools: []provider.BuiltinTool{{
+			Type:              provider.BuiltinToolWebSearch,
+			SearchContextSize: "high",
+			AllowedDomains:    []string{"go.dev"},
+			BlockedDomains:    []string{"spam.example"},
+		}},
+	})
+	var found map[string]any
+	for _, tool := range rr.Tools {
+		if tool["type"] == "web_search" {
+			found = tool
+		}
+	}
+	if found == nil {
+		t.Fatalf("web_search tool not serialized into the request: %+v", rr.Tools)
+	}
+	if found["search_context_size"] != "high" {
+		t.Errorf("search_context_size not serialized: %v", found["search_context_size"])
+	}
+	filters, ok := found["filters"].(map[string]any)
+	if !ok {
+		t.Fatalf("filters not serialized: %v", found["filters"])
+	}
+	if ad, _ := filters["allowed_domains"].([]string); len(ad) != 1 || ad[0] != "go.dev" {
+		t.Errorf("allowed_domains not serialized: %v", filters["allowed_domains"])
+	}
+	if bd, _ := filters["blocked_domains"].([]string); len(bd) != 1 || bd[0] != "spam.example" {
+		t.Errorf("blocked_domains not serialized: %v", filters["blocked_domains"])
+	}
+}
+
+// TestWebSearchToolOmitsEmptyOptions confirms a built-in web_search with no tuning
+// serializes a bare {"type":"web_search"} with no filters or context size.
+func TestWebSearchToolOmitsEmptyOptions(t *testing.T) {
+	c, err := New(Options{BaseURL: "https://example.com/v1", Dialect: "responses"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := c.buildResponsesRequest(provider.GenerationRequest{
+		Model:        "fugu",
+		BuiltinTools: []provider.BuiltinTool{{Type: provider.BuiltinToolWebSearch}},
+	})
+	if len(rr.Tools) != 1 {
+		t.Fatalf("expected exactly one tool entry, got %+v", rr.Tools)
+	}
+	tool := rr.Tools[0]
+	if tool["type"] != "web_search" {
+		t.Fatalf("web_search not serialized: %+v", tool)
+	}
+	if _, ok := tool["search_context_size"]; ok {
+		t.Errorf("empty search_context_size should be omitted: %+v", tool)
+	}
+	if _, ok := tool["filters"]; ok {
+		t.Errorf("empty filters should be omitted: %+v", tool)
+	}
+}
+
+// TestResponsesURLCitationsParsed checks that url_citation annotations on message
+// content become URLCitations, and that a web_search_call output item is captured
+// in ProviderItems without becoming a function ToolCall.
+func TestResponsesURLCitationsParsed(t *testing.T) {
+	const env = `{
+	  "id": "resp_ws",
+	  "model": "fugu",
+	  "status": "completed",
+	  "output": [
+	    {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "query": "go release"}},
+	    {"type": "message", "role": "assistant", "content": [
+	      {"type": "output_text", "text": "Go 1.23 shipped in August 2024.", "annotations": [
+	        {"type": "url_citation", "start_index": 0, "end_index": 10, "title": "Go 1.23 Release Notes", "url": "https://go.dev/doc/go1.23"}
+	      ]}
+	    ]}
+	  ],
+	  "usage": {"input_tokens": 5, "output_tokens": 9}
+	}`
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(env))
+	})
+	resp, err := c.Generate(context.Background(), provider.GenerationRequest{
+		Model:        "fugu",
+		Input:        []provider.Message{{Role: provider.RoleUser, Content: "go release"}},
+		BuiltinTools: []provider.BuiltinTool{{Type: provider.BuiltinToolWebSearch}},
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(resp.ToolCalls) != 0 {
+		t.Errorf("web_search_call must not surface as a function ToolCall: %+v", resp.ToolCalls)
+	}
+	if len(resp.URLCitations) != 1 {
+		t.Fatalf("expected 1 url citation, got %+v", resp.URLCitations)
+	}
+	cit := resp.URLCitations[0]
+	if cit.URL != "https://go.dev/doc/go1.23" || cit.Title != "Go 1.23 Release Notes" {
+		t.Errorf("citation not parsed: %+v", cit)
+	}
+	if !strings.Contains(resp.Text, "Go 1.23") {
+		t.Errorf("summary text not parsed: %q", resp.Text)
+	}
+	if len(resp.ProviderItems) != 2 {
+		t.Errorf("expected web_search_call + message captured in ProviderItems, got %d", len(resp.ProviderItems))
+	}
+}
+
+// TestWebSearchSentOverWire confirms the built-in tool reaches the HTTP body.
+func TestWebSearchSentOverWire(t *testing.T) {
+	var gotBody string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = w.Write([]byte(`{"id":"r","model":"fugu","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	})
+	_, err := c.Generate(context.Background(), provider.GenerationRequest{
+		Model:        "fugu",
+		Input:        []provider.Message{{Role: provider.RoleUser, Content: "q"}},
+		BuiltinTools: []provider.BuiltinTool{{Type: provider.BuiltinToolWebSearch, SearchContextSize: "medium"}},
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var sent responsesRequest
+	if err := json.Unmarshal([]byte(gotBody), &sent); err != nil {
+		t.Fatalf("request body not parseable: %v", err)
+	}
+	var ok bool
+	for _, tool := range sent.Tools {
+		if tool["type"] == "web_search" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Errorf("web_search tool missing from wire body: %s", gotBody)
 	}
 }
 
