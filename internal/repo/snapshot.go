@@ -38,6 +38,7 @@ type Snapshot struct {
 	mu            sync.RWMutex
 	contents      map[string]FileContent
 	contentsBytes int64
+	staleDetected bool // a read found content that diverged from the frozen hash
 }
 
 // ID returns the content-addressed snapshot identifier.
@@ -81,6 +82,15 @@ func (s *Snapshot) Stat(path string) (FileMeta, bool) {
 // Truncated reports whether the snapshot hit the total-bytes limit.
 func (s *Snapshot) Truncated() bool { return s.trunc }
 
+// Stale reports whether any read during the run found content that diverged from
+// what was frozen at snapshot time. A stale snapshot means the working tree was
+// edited mid-run, so the result no longer reflects a single consistent state.
+func (s *Snapshot) Stale() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.staleDetected
+}
+
 // Ref builds the schema-level reference for outputs.
 func (s *Snapshot) Ref() schema.SnapshotRef {
 	return schema.SnapshotRef{
@@ -112,14 +122,27 @@ func (s *Snapshot) ReadFile(_ context.Context, path string) (FileContent, error)
 	if !ok {
 		return FileContent{}, schema.NewError(schema.CodeRootSymlinkEscape, "path %q escapes the root", path)
 	}
-	// Reject symlinks at read time (time-of-use check).
-	if li, err := os.Lstat(abs); err == nil && li.Mode()&os.ModeSymlink != 0 && !s.cfg.FollowSymlinks {
+	// Reject symlinks at read time (time-of-use check), and capture the live size
+	// for the staleness check below.
+	li, lerr := os.Lstat(abs)
+	if lerr == nil && li.Mode()&os.ModeSymlink != 0 && !s.cfg.FollowSymlinks {
 		return FileContent{}, schema.NewError(schema.CodeRootSymlinkEscape, "path %q is a symlink", path)
 	}
 	limit := s.cfg.MaxFileBytes
 	data, err := readLimited(abs, limit)
 	if err != nil {
 		return FileContent{}, schema.NewError(schema.CodeInternal, "read %q: %v", path, err)
+	}
+	// Immutability: the bytes returned here must match what was frozen at snapshot
+	// time. A working-tree edit during the run changes the content under a single
+	// snapshot ID, mixing pre- and post-edit state, so verify against the frozen
+	// hash (content-hashed files) or the frozen size (oversized files, whose hash
+	// is synthetic) and fail with a typed stale-snapshot error on divergence.
+	if err := s.verifyFrozen(meta, data, li, lerr); err != nil {
+		s.mu.Lock()
+		s.staleDetected = true
+		s.mu.Unlock()
+		return FileContent{}, err
 	}
 	fc = newFileContent(meta, data)
 
@@ -145,6 +168,33 @@ func (s *Snapshot) ReadFile(_ context.Context, path string) (FileContent, error)
 	}
 	s.mu.Unlock()
 	return fc, nil
+}
+
+// verifyFrozen reports whether freshly-read bytes still match what was frozen for
+// the file at snapshot time. Content-hashed files are checked byte-for-byte;
+// oversized files (whose stored hash is synthetic) are checked by size, which is
+// all the snapshot froze for them. A divergence is a typed CE_SNAPSHOT_CHANGED so
+// callers surface a stale snapshot rather than silently mixing repository states.
+func (s *Snapshot) verifyFrozen(meta FileMeta, data []byte, li os.FileInfo, lerr error) error {
+	if meta.ContentFrozen {
+		if meta.Hash != "" && hashutil.Hash(data) != meta.Hash {
+			return staleError(meta.Path)
+		}
+		return nil
+	}
+	// Oversized/over-budget file: the frozen hash is synthetic (path+size), so the
+	// bytes cannot be compared. Verify size and modtime, which together catch an
+	// in-place edit that preserves the size. This is best-effort detection, not the
+	// byte-for-byte guarantee the content-frozen path provides.
+	if lerr == nil && (li.Size() != meta.Size || li.ModTime().UnixNano() != meta.ModTime) {
+		return staleError(meta.Path)
+	}
+	return nil
+}
+
+func staleError(path string) error {
+	return schema.NewError(schema.CodeSnapshotChanged,
+		"file %q changed on disk after the snapshot was frozen; rerun the analysis to refreeze the repository", path)
 }
 
 // BuildSnapshot freezes the repository at root into an immutable Snapshot. It
@@ -248,6 +298,7 @@ func (s *Snapshot) ingest(_ context.Context, paths []string) error {
 			Path:      rel,
 			Size:      size,
 			Mode:      li.Mode(),
+			ModTime:   li.ModTime().UnixNano(),
 			Tracked:   s.isGit && !isUntracked,
 			Untracked: isUntracked,
 			Vendored:  s.class.isVendored(rel),
@@ -262,6 +313,7 @@ func (s *Snapshot) ingest(_ context.Context, paths []string) error {
 				meta.Binary = IsBinary(data)
 				meta.Language = DetectLanguage(rel, data)
 				meta.Hash = hashutil.Hash(data)
+				meta.ContentFrozen = true
 				s.totalBy += int64(len(data))
 			}
 		} else {

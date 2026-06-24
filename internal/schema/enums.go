@@ -6,13 +6,30 @@
 // any subsystem.
 package schema
 
-// PlanMode selects between a full implementation plan and focused engineering
-// help. Help is exposed through codeexpert_plan with mode="help".
+// PlanMode is the internal discriminator between the plan and help pipelines.
+// It is no longer part of any public request: planning and help are separate
+// MCP tools (codeexpert_plan, codeexpert_help). It survives as the Kind of a
+// PlanResult and the Mode of an InterpretedTask so output and routing can tell
+// the two apart.
 type PlanMode string
 
 const (
 	PlanModePlan PlanMode = "plan"
 	PlanModeHelp PlanMode = "help"
+)
+
+// HelpAnswerType selects the shape of a help answer. It lets the caller signal
+// what kind of help they need; "auto" (the default) asks the model to infer it.
+// Only "diagnose" forces a root-cause hypothesis structure; the others answer in
+// their natural shape.
+type HelpAnswerType string
+
+const (
+	AnswerAuto     HelpAnswerType = "auto"
+	AnswerExplain  HelpAnswerType = "explain"
+	AnswerDiagnose HelpAnswerType = "diagnose"
+	AnswerDecide   HelpAnswerType = "decide"
+	AnswerUnblock  HelpAnswerType = "unblock"
 )
 
 // AnalysisProfile controls retrieval depth and model routing.

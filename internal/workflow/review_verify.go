@@ -40,10 +40,118 @@ func dedupeCandidates(cands []candidateFinding) []candidateFinding {
 	return out
 }
 
+// dedupeKey fingerprints a candidate by what it actually claims — path, enclosing
+// symbol, category, and the normalized trigger and claim — rather than by a line
+// bucket. Two passes that report the SAME defect (identical trigger/claim) merge
+// even if their reported lines differ slightly; two DISTINCT defects on the same
+// line stay separate because their trigger/claim differ. The old line-bucket key
+// did the opposite, merging distinct nearby defects and splitting identical ones.
 func dedupeKey(c candidateFinding) string {
-	return strings.ToLower(strings.TrimSpace(c.Location.Path)) + "|" +
-		itoa(c.Location.StartLine/4) + "|" + // bucket nearby lines together
-		string(c.Category)
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(c.Location.Path)),
+		normalizeFingerprintText(c.Location.Symbol),
+		string(c.Category),
+		normalizeFingerprintText(c.Trigger),
+		normalizeFingerprintText(c.Claim),
+	}, "|")
+}
+
+// normalizeFingerprintText lowercases, drops non-alphanumeric characters, and
+// collapses runs so trivial wording/whitespace differences do not defeat dedup.
+func normalizeFingerprintText(s string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevSpace = false
+		default:
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// numberedSnippet renders content lines [start-ctx, end+ctx] with 1-based line
+// numbers so the verifier can reason about exact locations. A non-positive start
+// falls back to the head of the file.
+func numberedSnippet(content []byte, start, end, ctxLines int) string {
+	lines := strings.Split(string(content), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	lo, hi := start-ctxLines, end+ctxLines
+	if start <= 0 {
+		lo, hi = 1, 24
+	}
+	if lo < 1 {
+		lo = 1
+	}
+	if hi > len(lines) {
+		hi = len(lines)
+	}
+	if end < start {
+		hi = lo + ctxLines
+		if hi > len(lines) {
+			hi = len(lines)
+		}
+	}
+	// A location past EOF (a model hallucination) would leave lo > hi and render
+	// nothing; clamp lo down so the verifier still sees the file tail with context
+	// rather than an empty code block.
+	if lo > hi {
+		lo = hi - 2*ctxLines
+		if lo < 1 {
+			lo = 1
+		}
+	}
+	var b strings.Builder
+	for i := lo; i <= hi; i++ {
+		fmt.Fprintf(&b, "%5d| %s\n", i, lines[i-1])
+	}
+	return b.String()
+}
+
+// buildLocationPacket assembles the location-specific evidence the verifier needs
+// to judge a candidate against real code rather than its own description: the
+// frozen changed hunk for the file and the actual head-view (or, for a deletion,
+// removed base) source around the cited location. Cited corroborating evidence is
+// rendered once in the shared catalog and referenced by ID, so it is not
+// duplicated here.
+func (e *Engine) buildLocationPacket(ctx context.Context, rs *repo.ReviewSnapshot, cand candidateFinding) string {
+	if rs == nil {
+		return ""
+	}
+	path := cand.Location.Path
+	var cf *repo.ChangedFile
+	for i := range rs.Manifest().Files {
+		if rs.Manifest().Files[i].Path == path {
+			cf = &rs.Manifest().Files[i]
+			break
+		}
+	}
+	var b strings.Builder
+	if cf != nil && cf.Diff != "" {
+		fmt.Fprintf(&b, "Frozen changed hunk (%s):\n```diff\n%s\n```\n", cf.Status, truncateStr(cf.Diff, 2400))
+	} else {
+		b.WriteString("Frozen changed hunk: none recorded for this path (the location may be outside the change).\n")
+	}
+	switch {
+	case cf != nil && cf.Status == "D":
+		if data, err := rs.ReadBase(ctx, path); err == nil {
+			fmt.Fprintf(&b, "Removed (base) source near the finding:\n```\n%s```\n", numberedSnippet(data, cand.Location.StartLine, cand.Location.EndLine, 4))
+		}
+	case path != "":
+		if fc, err := rs.ReadHead(ctx, path); err == nil && !fc.Meta.Binary {
+			fmt.Fprintf(&b, "Head source %s around lines %d-%d:\n```\n%s```\n", path, cand.Location.StartLine, cand.Location.EndLine,
+				numberedSnippet(fc.Bytes, cand.Location.StartLine, cand.Location.EndLine, 4))
+		}
+	}
+	return b.String()
 }
 
 // verdict is the verifier's decision for one candidate.
@@ -69,18 +177,18 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 	if len(cands) == 0 {
 		return nil
 	}
-	_ = rs
 	system := prompts.MustGet(prompts.CommonSystem) + "\n\n" + prompts.MustGet(prompts.ReviewVerify)
 	sess := e.NewSession(model, effort, system, nil, tracker, usage, nil)
 
 	var b strings.Builder
-	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain.\nEach candidate cites evidence by ID; resolve those IDs against the Evidence catalog below. If a cited ID is listed as NOT FOUND, treat the claim as unsupported.\n\n")
+	b.WriteString("# Candidate findings to verify\nFor each, decide keep (true/false), evidence_level (A/B/C/D), severity, and blocking. Reject unsupported candidates; default to keep=false when uncertain. Judge each candidate against the REAL CODE in its evidence packet below — the frozen hunk and the head/base source — not against the candidate's own wording. You may only LOWER an evidence level; a level you cannot justify from the shown code must come down.\nEach candidate also cites corroborating evidence by ID; resolve those IDs against the Evidence catalog. If a cited ID is listed as NOT FOUND, treat that support as absent.\n\n")
 	b.WriteString(renderEvidenceForVerifier(evid, cands))
 	b.WriteString("\n")
 	for i, c := range cands {
-		fmt.Fprintf(&b, "## Candidate %d\nTitle: %s\nLocation: %s:%d-%d\nCategory: %s\nClaim: %s\nTrigger: %s\nImpact: %s\nRecommendation: %s\nAssumptions: %s\n%s\n",
+		fmt.Fprintf(&b, "## Candidate %d\nTitle: %s\nLocation: %s:%d-%d\nCategory: %s\nClaim: %s\nTrigger: %s\nImpact: %s\nRecommendation: %s\nAssumptions: %s\n%s\n\n### Evidence packet (real code)\n%s\n",
 			i, c.Title, c.Location.Path, c.Location.StartLine, c.Location.EndLine, c.Category, c.Claim, c.Trigger, c.Impact,
-			c.Recommendation, strings.Join(c.Assumptions, "; "), renderCandidateEvidenceRefs(c.EvidenceIDs))
+			c.Recommendation, strings.Join(c.Assumptions, "; "), renderCandidateEvidenceRefs(c.EvidenceIDs),
+			e.buildLocationPacket(ctx, rs, c))
 	}
 	b.WriteString("Return JSON {\"verdicts\": [{index, keep, evidence_level, severity, blocking, reason}, ...]} with one entry per candidate index.")
 
@@ -115,7 +223,7 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 // applyGates enforces the deterministic publication gates and policy limits,
 // recording suppression reasons.
 func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidence.Store, changed map[string][]repo.LineRange,
-	cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
+	deleted map[string]int, cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
 
 	val := evidence.NewValidator(snap)
 	minLevel := minEvidenceLevel(cfg, policy)
@@ -131,21 +239,44 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 			suppress("verifier_rejected")
 			continue
 		}
-		if vc.cand.Location.Path == "" || !val.FileExists(vc.cand.Location.Path) {
+		if vc.cand.Location.Path == "" {
 			suppress("invalid_location")
 			continue
 		}
-		if err := val.ValidateLocation(nil, vc.cand.Location.Path, vc.cand.Location.StartLine, vc.cand.Location.EndLine); err != nil {
-			suppress("invalid_location")
-			continue
-		}
-		// Deterministic changed-line attribution: a finding must point inside (or
-		// adjacent to) a changed hunk. Files with no recorded ranges (e.g. newly
-		// added or untracked) cannot be attributed deterministically, so they
-		// fall through to the verifier's judgment rather than being dropped.
-		if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine, cfg.Review.LineOverlapTolerance) {
-			suppress("outside_change")
-			continue
+		// A finding attributed to a deleted file cannot be validated against the
+		// head (the file is gone) or against changed head ranges (there are none).
+		// Its lines live only in the base, so accept it on path identity — it is a
+		// finding about removed content — but still reject a malformed range or a
+		// line past the end of the removed file (a hallucinated location), so a
+		// deletion finding cannot publish a bogus location.
+		baseLines, isDeletion := deleted[vc.cand.Location.Path]
+		if isDeletion {
+			loc := vc.cand.Location
+			if loc.StartLine < 0 || (loc.EndLine > 0 && loc.EndLine < loc.StartLine) {
+				suppress("invalid_location")
+				continue
+			}
+			if baseLines > 0 && (loc.StartLine > baseLines+1 || loc.EndLine > baseLines+1) {
+				suppress("invalid_location")
+				continue
+			}
+		} else {
+			if !val.FileExists(vc.cand.Location.Path) {
+				suppress("invalid_location")
+				continue
+			}
+			if err := val.ValidateLocation(nil, vc.cand.Location.Path, vc.cand.Location.StartLine, vc.cand.Location.EndLine); err != nil {
+				suppress("invalid_location")
+				continue
+			}
+			// Deterministic changed-line attribution: a finding must point inside
+			// (or adjacent to) a changed hunk. Files with no recorded ranges (e.g.
+			// newly added or untracked) cannot be attributed deterministically, so
+			// they fall through to the verifier's judgment rather than being dropped.
+			if !withinChange(changed[vc.cand.Location.Path], vc.cand.Location.StartLine, vc.cand.Location.EndLine, cfg.Review.LineOverlapTolerance) {
+				suppress("outside_change")
+				continue
+			}
 		}
 		if vc.cand.Category == schema.CategoryStyle && !includeStyle {
 			suppress("style_disabled")
@@ -177,28 +308,20 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 		return evidenceRank(survivors[i].v.EvidenceLevel) > evidenceRank(survivors[j].v.EvidenceLevel)
 	})
 
-	// Apply count limits.
-	maxBlocking := cfg.Review.MaxBlockingFindings
-	if policy.MaxBlockingFindings > 0 {
-		maxBlocking = policy.MaxBlockingFindings
-	}
+	// Apply the total-findings cap. A blocker is NEVER demoted or dropped for a
+	// display limit: hiding or downgrading a genuine blocker to fit a count is the
+	// most dangerous thing a review can do. The cap drops only the lowest-priority
+	// NON-blocking overflow (survivors are already sorted blocking-first); every
+	// blocker is always published.
 	maxTotal := cfg.Review.MaxTotalFindings
 	if policy.MaxTotalFindings > 0 {
 		maxTotal = policy.MaxTotalFindings
 	}
 	var limited []verifiedCandidate
-	blocking := 0
 	for _, vc := range survivors {
-		if maxTotal > 0 && len(limited) >= maxTotal {
+		if maxTotal > 0 && len(limited) >= maxTotal && !vc.v.Blocking {
 			suppress("over_total_limit")
 			continue
-		}
-		if vc.v.Blocking {
-			if maxBlocking > 0 && blocking >= maxBlocking {
-				vc.v.Blocking = false // demote rather than drop
-			} else {
-				blocking++
-			}
 		}
 		limited = append(limited, vc)
 	}
@@ -221,6 +344,10 @@ func (e *Engine) finalizeFindings(survivors []verifiedCandidate, evid *evidence.
 		if level == "" {
 			level = schema.EvidenceCodePath
 		}
+		// Confirmation strength is derived from the (already capped) evidence level,
+		// not asserted by the model. Only an executed check (level A) is "confirmed";
+		// everything else carries an honest status.
+		status := schema.ConfirmationFromEvidence(level)
 		findings = append(findings, schema.ReviewFinding{
 			ID:             fmt.Sprintf("F%d", i+1),
 			Title:          c.Title,
@@ -234,8 +361,13 @@ func (e *Engine) finalizeFindings(survivors []verifiedCandidate, evid *evidence.
 			Impact:         c.Impact,
 			Evidence:       resolveRefs(evid, c.EvidenceIDs),
 			Recommendation: c.Recommendation,
-			Verification:   schema.VerificationInfo{Method: "verifier+location", Confirmed: true, Detail: vc.v.Reason},
-			Assumptions:    c.Assumptions,
+			Verification: schema.VerificationInfo{
+				Method:    "verifier+evidence-packet",
+				Status:    status,
+				Confirmed: level == schema.EvidenceExecutable,
+				Detail:    vc.v.Reason,
+			},
+			Assumptions: c.Assumptions,
 		})
 	}
 	return findings

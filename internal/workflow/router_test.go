@@ -23,17 +23,17 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 		{schema.ProfileBalanced, 7},
 		{schema.ProfileDeep, 12},
 	} {
-		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}, schema.RetrievalOpts{}).MaxModelCalls; got != tc.want {
 			t.Errorf("%s default MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
 		}
 	}
 
 	// Timeout is wired from the provider request timeout (default and non-default).
-	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 30*time.Minute {
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}, schema.RetrievalOpts{}).Timeout; got != 30*time.Minute {
 		t.Errorf("Timeout = %v, want 30m (from provider.request_timeout)", got)
 	}
 	cfg.Provider.RequestTimeout = config.Duration(45 * time.Second)
-	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 45*time.Second {
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}, schema.RetrievalOpts{}).Timeout; got != 45*time.Second {
 		t.Errorf("Timeout = %v, want 45s (from non-default provider.request_timeout)", got)
 	}
 
@@ -47,14 +47,14 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 		{schema.ProfileBalanced, 8},
 		{schema.ProfileDeep, 13},
 	} {
-		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}, schema.RetrievalOpts{}).MaxModelCalls; got != tc.want {
 			t.Errorf("%s configured MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
 		}
 	}
 
 	// Configured byte-read baseline is honored.
 	cfg.Retrieval.MaxBytesRead = 8192
-	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{})
+	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{}, schema.RetrievalOpts{})
 	if l.MaxModelCalls != 13 {
 		t.Errorf("configured deep MaxModelCalls = %d, want 13", l.MaxModelCalls)
 	}
@@ -63,9 +63,58 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 	}
 
 	// A per-request budget still wins over the config baseline.
-	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2, MaxBytesRead: 4096})
+	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2, MaxBytesRead: 4096}, schema.RetrievalOpts{})
 	if l.MaxModelCalls != 2 || l.MaxBytesRead != 4096 {
 		t.Errorf("request budget override = (%d,%d), want (2,4096)", l.MaxModelCalls, l.MaxBytesRead)
+	}
+}
+
+// TestResolveLimitsClampsDownOnly proves a per-request budget can only LOWER a
+// limit, never raise it above the configured safety maximum (the core fix for the
+// router accepting limit-raising overrides).
+func TestResolveLimitsClampsDownOnly(t *testing.T) {
+	cfg := config.Defaults() // deep ceiling = 12 model calls, request timeout = 30m
+
+	// Asking for MORE than the configured ceiling is clamped down.
+	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 9999}, schema.RetrievalOpts{})
+	if l.MaxModelCalls != 12 {
+		t.Errorf("MaxModelCalls = %d, want clamped to 12", l.MaxModelCalls)
+	}
+	// Asking for LESS is honored.
+	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2}, schema.RetrievalOpts{})
+	if l.MaxModelCalls != 2 {
+		t.Errorf("MaxModelCalls = %d, want 2 (lowered)", l.MaxModelCalls)
+	}
+	// Timeout is clamped to the configured request timeout.
+	l = resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{TimeoutSeconds: 99 * 3600}, schema.RetrievalOpts{})
+	if l.Timeout != 30*time.Minute {
+		t.Errorf("Timeout = %v, want clamped to 30m", l.Timeout)
+	}
+	// A configured byte ceiling clamps an over-large request.
+	cfg.Retrieval.MaxBytesRead = 1000
+	l = resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{MaxBytesRead: 5000}, schema.RetrievalOpts{})
+	if l.MaxBytesRead != 1000 {
+		t.Errorf("MaxBytesRead = %d, want clamped to 1000", l.MaxBytesRead)
+	}
+	// A retrieval override folds into the equivalent budget field and is clamped.
+	cfg.Retrieval.MaxFileReads = 80
+	l = resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}, schema.RetrievalOpts{MaxFileReads: 9999})
+	if l.MaxFilesRead != 80 {
+		t.Errorf("MaxFilesRead via retrieval = %d, want clamped to 80", l.MaxFilesRead)
+	}
+}
+
+// TestCheckSecondsCeiling proves a positive sub-second check budget does not
+// truncate to 0 (which clampDown would read as "no ceiling").
+func TestCheckSecondsCeiling(t *testing.T) {
+	if got := checkSecondsCeiling(500 * time.Millisecond); got != 1 {
+		t.Errorf("500ms ceiling = %d, want 1", got)
+	}
+	if got := checkSecondsCeiling(90 * time.Second); got != 90 {
+		t.Errorf("90s ceiling = %d, want 90", got)
+	}
+	if got := checkSecondsCeiling(0); got != 0 {
+		t.Errorf("0 ceiling = %d, want 0 (no limit)", got)
 	}
 }
 

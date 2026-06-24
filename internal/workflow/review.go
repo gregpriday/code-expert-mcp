@@ -4,11 +4,14 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gregpriday/codeexpert/internal/budget"
+	"github.com/gregpriday/codeexpert/internal/checks"
 	"github.com/gregpriday/codeexpert/internal/config"
 	"github.com/gregpriday/codeexpert/internal/evidence"
 	"github.com/gregpriday/codeexpert/internal/llmtools"
+	"github.com/gregpriday/codeexpert/internal/prompts"
 	"github.com/gregpriday/codeexpert/internal/repo"
 	"github.com/gregpriday/codeexpert/internal/report"
 	"github.com/gregpriday/codeexpert/internal/schema"
@@ -16,6 +19,9 @@ import (
 
 // Review runs the precision-first review workflow over a frozen Git change set.
 func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunOptions) (schema.ReviewResult, error) {
+	if err := validateReviewRequest(req); err != nil {
+		return schema.ReviewResult{}, err
+	}
 	runID := opts.RunID
 	if runID == "" {
 		runID = newRunID("review")
@@ -45,8 +51,13 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	manifest := rs.Manifest()
 
 	profile := resolveProfile(req.Profile, e.Cfg.Review.DefaultProfile)
-	limits := resolveLimits(e.Cfg, profile, req.Budget)
+	limits := resolveLimits(e.Cfg, profile, req.Budget, req.Retrieval)
 	tracker := budget.New(limits)
+	// Apply the time budget as a real context deadline (see runPlanHelp). The
+	// candidate passes and the verifier soft-fail on budget exhaustion, so a
+	// timeout yields a partial review rather than a hard error.
+	ctx, cancel := tracker.Deadline(ctx)
+	defer cancel()
 	usage := &usageAccumulator{}
 	evid := evidence.NewStore(snap.ID())
 	guidance := e.guidanceList(ctx, snap)
@@ -65,7 +76,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	reviewable := reviewableFiles(manifest, e.Cfg, req.Policy)
 	if len(reviewable) == 0 {
 		return e.assembleReview(ctx, runID, rs, riskMap, nil, nil, evid, tracker, usage,
-			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile), nil
+			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile, req.Policy, nil, req.Output.IncludeTrace), nil
 	}
 
 	// Enrich the manifest with enclosing changed symbols so the tool-less
@@ -97,7 +108,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 		progress("verification", "verifying candidates")
 		model, effort := e.routedSynthesisModel("review_verify", profile, complexity, highRisk)
 		verified := e.verifyCandidates(ctx, rs, deduped, evid, model, effort, tracker, usage)
-		survivors := applyGates(verified, snap, evid, changedRanges, e.Cfg, req.Policy, &suppressed)
+		survivors := applyGates(verified, snap, evid, changedRanges, deletedBaseLines(ctx, rs), e.Cfg, req.Policy, &suppressed)
 
 		// Finalize (rank/phrase only survivors).
 		progress("synthesis", "finalizing findings")
@@ -112,20 +123,48 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	if reason, limited := tracker.Exhausted(); limited {
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: reason + "; coverage may be incomplete"})
 	}
+
+	// Verification: run the applicable checks in an isolated copy of the snapshot.
+	// off runs nothing; safe runs read-only analyzers; configured/deep run the
+	// project's checks. Executed checks are the only thing that yields level-A
+	// (executed) evidence records. They run after candidate findings are finalized,
+	// so they corroborate the change set as a whole and surface as Checks/coverage
+	// rather than retroactively upgrading an already-published finding's level.
+	var checkResults []schema.CheckResult
+	if runner := checks.NewRunner(snap, e.Cfg.Checks, req.Verification, e.Log); runner.Enabled() {
+		progress("verification", "running checks (isolated)")
+		results, checkEvid, cerr := runner.Run(ctx, time.Duration(limits.MaxCheckSeconds)*time.Second)
+		if cerr != nil {
+			limitations = append(limitations, schema.Limitation{Stage: "checks", Message: "check runner: " + cerr.Error()})
+		}
+		checkResults = results
+		for _, rec := range checkEvid {
+			evid.Add(rec)
+		}
+	}
+
 	progress("complete", "done")
-	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile), nil
+	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile, req.Policy, checkResults, req.Output.IncludeTrace), nil
 }
 
 // assembleReview builds the final ReviewResult, coverage, summary, and renders.
 func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.ReviewSnapshot, riskMap []schema.RiskArea,
 	findings []schema.ReviewFinding, suppressed *schema.SuppressionStats, evid *evidence.Store, tracker *budget.Tracker,
-	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile) schema.ReviewResult {
+	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile, policy schema.ReviewPolicy,
+	checkResults []schema.CheckResult, includeTrace bool) schema.ReviewResult {
 
 	manifest := rs.Manifest()
-	coverage := buildCoverage(manifest, e.Cfg, riskMap, findings)
+	coverage := buildCoverage(manifest, e.Cfg, policy, riskMap, findings)
+	for _, c := range checkResults {
+		coverage.ChecksRun = append(coverage.ChecksRun, c.Name)
+	}
 	status := schema.StatusComplete
 	if _, limited := tracker.Exhausted(); tracker.TimedOut() || limited {
 		status = schema.StatusPartial
+	}
+	if rs.Base().Stale() {
+		status = schema.StatusStale
+		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "the working tree changed after the snapshot was frozen; results may mix repository states — rerun to refreeze"})
 	}
 
 	blocking := 0
@@ -163,12 +202,15 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 		RiskMap:     riskMap,
 		Findings:    findings,
 		Coverage:    coverage,
+		Checks:      checkResults,
 		Limitations: limitations,
 		Usage:       finalizeUsage(usage, tracker),
 	}
 	if suppressed != nil {
 		result.Suppressed = *suppressed
 	}
+	e.attachReviewTrace(&result, profile, len(evid.All()),
+		[]string{prompts.CommonSystem, prompts.ReviewDiffLocal, prompts.ReviewContext, prompts.ReviewSpecialist, prompts.ReviewVerify}, includeTrace)
 
 	md := report.ReviewMarkdown(result)
 	result.Markdown = md
@@ -181,14 +223,14 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 	return result
 }
 
-// reviewableFiles filters the manifest to files in scope for review.
+// reviewableFiles filters the manifest to files in scope for review. Deletions
+// stay in scope: a removed API, migration, security check, or test is exactly the
+// kind of change a reviewer must catch, and the removed lines are carried in the
+// frozen diff even though there is nothing left in the head to read.
 func reviewableFiles(m *repo.ChangeManifest, cfg config.Config, policy schema.ReviewPolicy) []repo.ChangedFile {
 	includeGen := cfg.Review.IncludeGenerated || policy.IncludeGenerated
 	var out []repo.ChangedFile
 	for _, f := range m.Files {
-		if f.Status == "D" {
-			continue // deletions: nothing in head to review
-		}
 		if f.Binary {
 			continue
 		}
@@ -199,6 +241,26 @@ func reviewableFiles(m *repo.ChangeManifest, cfg config.Config, policy schema.Re
 			continue
 		}
 		out = append(out, f)
+	}
+	return out
+}
+
+// deletedBaseLines maps each removed path to its base-version line count (-1 when
+// the base content is unreadable), so the publication gate can attribute a finding
+// to a deleted file (whose lines live only in the base) AND still reject a
+// hallucinated line number past the end of the removed file. Presence in the map
+// means "this path was deleted".
+func deletedBaseLines(ctx context.Context, rs *repo.ReviewSnapshot) map[string]int {
+	out := map[string]int{}
+	for _, f := range rs.Manifest().Files {
+		if f.Status != "D" {
+			continue
+		}
+		n := -1
+		if data, err := rs.ReadBase(ctx, f.Path); err == nil {
+			n = strings.Count(string(data), "\n") + 1
+		}
+		out[f.Path] = n
 	}
 	return out
 }
@@ -314,20 +376,36 @@ func riskRationale(cat schema.FindingCategory) string {
 	}
 }
 
-func buildCoverage(m *repo.ChangeManifest, cfg config.Config, riskMap []schema.RiskArea, findings []schema.ReviewFinding) schema.ReviewCoverage {
+// buildCoverage assigns every changed file a terminal state. A file is "reviewed"
+// only if it was actually fed to the candidate passes (non-binary, non-vendored,
+// in policy) — deletions included, since their removed content is reviewed via
+// the frozen diff. Excluded files carry the policy reason. Coverage is derived
+// from what was demonstrably handled, not from mere manifest membership.
+func buildCoverage(m *repo.ChangeManifest, cfg config.Config, policy schema.ReviewPolicy, riskMap []schema.RiskArea, findings []schema.ReviewFinding) schema.ReviewCoverage {
 	cov := schema.ReviewCoverage{}
-	includeGen := cfg.Review.IncludeGenerated
+	// Honor the same include-generated decision reviewableFiles made, so a file
+	// reviewed under policy.include_generated is not reported as excluded.
+	includeGen := cfg.Review.IncludeGenerated || policy.IncludeGenerated
+	add := func(f repo.ChangedFile, state schema.CoverageState, reason string) {
+		cov.Files = append(cov.Files, schema.FileCoverage{Path: f.Path, Status: f.Status, State: state, Reason: reason})
+	}
 	for _, f := range m.Files {
 		switch {
-		case f.Status == "D":
-			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "deleted"})
 		case f.Binary:
+			add(f, schema.CoverageUnsupported, "binary content")
 			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "binary"})
 		case f.Vendored:
+			add(f, schema.CoverageVendored, "vendored dependency")
 			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "vendored"})
 		case f.Generated && !includeGen:
+			add(f, schema.CoverageExcluded, "generated file (set review.include_generated to review)")
 			cov.SkippedFiles = append(cov.SkippedFiles, schema.SkippedFile{Path: f.Path, Reason: "generated"})
 		default:
+			reason := ""
+			if f.Status == "D" {
+				reason = "deletion reviewed via removed content"
+			}
+			add(f, schema.CoverageReviewed, reason)
 			cov.ReviewedFiles = append(cov.ReviewedFiles, f.Path)
 			cov.ChangedLineEstimate += f.Added + f.Deleted
 		}

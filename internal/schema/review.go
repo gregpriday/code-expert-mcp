@@ -28,12 +28,42 @@ type SourceLocation struct {
 	Symbol    string `json:"symbol,omitempty"`
 }
 
-// VerificationInfo records how a finding was checked.
+// VerificationInfo records how a finding was checked. Confirmed is reserved for
+// findings reproduced by an executed check; Status is the honest confirmation
+// vocabulary for everything else, so a model-only judgment is never presented as
+// "confirmed".
 type VerificationInfo struct {
-	Method    string `json:"method"`
-	Confirmed bool   `json:"confirmed"`
-	CheckID   string `json:"check_id,omitempty"`
-	Detail    string `json:"detail,omitempty"`
+	Method    string             `json:"method"`
+	Status    ConfirmationStatus `json:"status"`
+	Confirmed bool               `json:"confirmed"`
+	CheckID   string             `json:"check_id,omitempty"`
+	Detail    string             `json:"detail,omitempty"`
+}
+
+// ConfirmationStatus is the honest strength of a finding's confirmation, derived
+// deterministically from its (capped) evidence level.
+type ConfirmationStatus string
+
+const (
+	ConfirmedByExecution ConfirmationStatus = "confirmed_by_execution" // a check reproduced it (evidence A)
+	CorroboratedByCode   ConfirmationStatus = "corroborated_by_code"   // independent caller/def/test/analyzer (B)
+	PlausibleCodePath    ConfirmationStatus = "plausible_code_path"    // a concrete code path supports it (C)
+	Unconfirmed          ConfirmationStatus = "unconfirmed"            // model judgment only, material assumptions (D)
+)
+
+// ConfirmationFromEvidence maps a capped evidence level to its honest
+// confirmation status.
+func ConfirmationFromEvidence(level EvidenceLevel) ConfirmationStatus {
+	switch level {
+	case EvidenceExecutable:
+		return ConfirmedByExecution
+	case EvidenceTool:
+		return CorroboratedByCode
+	case EvidenceCodePath:
+		return PlausibleCodePath
+	default:
+		return Unconfirmed
+	}
 }
 
 // ReviewSummary is the high-level review outcome.
@@ -55,15 +85,38 @@ type RiskArea struct {
 	Priority  int             `json:"priority"`
 }
 
-// ReviewCoverage reports what was and was not reviewed.
+// ReviewCoverage reports what was and was not reviewed. Files carries a terminal
+// state for every changed file so coverage reflects what was demonstrably handled
+// rather than mere manifest membership.
 type ReviewCoverage struct {
-	ReviewedFiles       []string      `json:"reviewed_files"`
-	SkippedFiles        []SkippedFile `json:"skipped_files,omitempty"`
-	ChangedLineEstimate int           `json:"changed_line_estimate"`
-	SpecialistPasses    []string      `json:"specialist_passes,omitempty"`
-	ChecksRun           []string      `json:"checks_run,omitempty"`
-	Unindexed           []string      `json:"unindexed,omitempty"`
-	BudgetLimited       bool          `json:"budget_limited"`
+	Files               []FileCoverage `json:"files,omitempty"`
+	ReviewedFiles       []string       `json:"reviewed_files"`
+	SkippedFiles        []SkippedFile  `json:"skipped_files,omitempty"`
+	ChangedLineEstimate int            `json:"changed_line_estimate"`
+	SpecialistPasses    []string       `json:"specialist_passes,omitempty"`
+	ChecksRun           []string       `json:"checks_run,omitempty"`
+	Unindexed           []string       `json:"unindexed,omitempty"`
+	BudgetLimited       bool           `json:"budget_limited"`
+}
+
+// CoverageState is the terminal state of one changed file in a review.
+type CoverageState string
+
+const (
+	CoverageReviewed    CoverageState = "reviewed"           // sent through the candidate passes
+	CoverageExcluded    CoverageState = "excluded-by-policy" // generated/style excluded by config or policy
+	CoverageUnsupported CoverageState = "unsupported-binary" // binary content the text passes cannot read
+	CoverageVendored    CoverageState = "vendored"           // vendored dependency, out of scope
+	CoverageTruncated   CoverageState = "truncated"          // reviewed, but its diff was capped for size
+	CoverageFailed      CoverageState = "failed"             // a pass errored before covering it
+)
+
+// FileCoverage is the terminal review state of one changed file.
+type FileCoverage struct {
+	Path   string        `json:"path"`
+	Status string        `json:"status,omitempty"` // git status letter (A/M/D/R/C)
+	State  CoverageState `json:"state"`
+	Reason string        `json:"reason,omitempty"`
 }
 
 // SkippedFile records a file omitted from review and why.

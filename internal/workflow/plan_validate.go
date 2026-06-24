@@ -14,8 +14,9 @@ import (
 )
 
 // validatePlan applies the deterministic plan gates and returns a list of issues
-// (empty means valid).
-func validatePlan(ctx context.Context, plan *schema.ImplementationPlan, snap *repo.Snapshot, evid *evidence.Store, cfg config.Config) []string {
+// (empty means valid). criteria carries the caller's acceptance criteria so the
+// plan can be checked for full criterion-to-step-to-test traceability.
+func validatePlan(ctx context.Context, plan *schema.ImplementationPlan, criteria []string, snap *repo.Snapshot, evid *evidence.Store, cfg config.Config) []string {
 	var issues []string
 	val := evidence.NewValidator(snap)
 
@@ -109,7 +110,69 @@ func validatePlan(ctx context.Context, plan *schema.ImplementationPlan, snap *re
 			}
 		}
 	}
+
+	// Acceptance-criterion traceability: every criterion the caller supplied must
+	// map to at least one real step, with a validation path. A plan that silently
+	// drops a criterion is incomplete, so this fails validation (and feeds the
+	// repair loop) rather than passing as "complete".
+	issues = append(issues, validateTraceability(plan, criteria, ids)...)
+
 	return dedupeStrings(issues)
+}
+
+// validateTraceability checks that the plan's traceability map covers every
+// acceptance criterion with at least one real step. stepIDs is the set of valid
+// step IDs already collected by the caller.
+func validateTraceability(plan *schema.ImplementationPlan, criteria []string, stepIDs map[string]bool) []string {
+	var nonEmpty []string
+	for _, c := range criteria {
+		if strings.TrimSpace(c) != "" {
+			nonEmpty = append(nonEmpty, strings.TrimSpace(c))
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return nil // no criteria to trace
+	}
+
+	covered := map[string]schema.CriterionCoverage{}
+	var issues []string
+	for _, cc := range plan.Traceability {
+		key := normalizeCriterion(cc.Criterion)
+		covered[key] = cc
+		// Every step a coverage entry names must be a real step.
+		for _, sid := range cc.StepIDs {
+			if !stepIDs[sid] {
+				issues = append(issues, fmt.Sprintf("traceability for %q references unknown step %q", truncateStr(cc.Criterion, 60), sid))
+			}
+		}
+	}
+	for _, c := range nonEmpty {
+		cc, ok := covered[normalizeCriterion(c)]
+		if !ok {
+			issues = append(issues, fmt.Sprintf("acceptance criterion is not covered by any step in the traceability map: %q", truncateStr(c, 80)))
+			continue
+		}
+		if len(realStepIDs(cc.StepIDs, stepIDs)) == 0 {
+			issues = append(issues, fmt.Sprintf("acceptance criterion %q maps to no implementing step", truncateStr(c, 80)))
+		}
+	}
+	return issues
+}
+
+func realStepIDs(ids []string, valid map[string]bool) []string {
+	var out []string
+	for _, id := range ids {
+		if valid[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// normalizeCriterion lowercases and collapses whitespace so a criterion matches
+// its traceability entry despite trivial rewording.
+func normalizeCriterion(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 // looksLikeFilePath reports whether p is specific enough to validate as a file
@@ -176,34 +239,12 @@ func detectCycle(steps []schema.PlanStep) string {
 	return ""
 }
 
-// validateHelp performs light validation, returning limitations for bad citations.
-func validateHelp(ctx context.Context, help *schema.HelpReport, snap *repo.Snapshot, evid *evidence.Store) []schema.Limitation {
-	var lims []schema.Limitation
-	for i := range help.LikelyCauses {
-		valid := help.LikelyCauses[i].EvidenceIDs[:0]
-		for _, eid := range help.LikelyCauses[i].EvidenceIDs {
-			if evid.Has(eid) {
-				valid = append(valid, eid)
-			}
-		}
-		// If a cause claimed verified but cites no valid evidence, downgrade it.
-		if help.LikelyCauses[i].Verified && len(valid) == 0 {
-			help.LikelyCauses[i].Verified = false
-		}
-		help.LikelyCauses[i].EvidenceIDs = valid
-	}
-	if strings.TrimSpace(help.ProblemRestatement) == "" {
-		lims = append(lims, schema.Limitation{Stage: "synthesis", Message: "help report missing a problem restatement"})
-	}
-	return lims
-}
-
 // repairPlan sends the validation issues back for one bounded repair attempt.
-func (e *Engine) repairPlan(ctx context.Context, sess *Session, snap *repo.Snapshot, evid *evidence.Store, issues []string) (*schema.ImplementationPlan, error) {
+func (e *Engine) repairPlan(ctx context.Context, sess *Session, criteria []string, snap *repo.Snapshot, evid *evidence.Store, issues []string) (*schema.ImplementationPlan, error) {
 	out := inferSchema[schema.ImplementationPlan]("implementation_plan")
 	instr := prompts.MustGet(prompts.RepairSchema) + "\n\n## Validation errors to fix\n- " +
 		strings.Join(issues, "\n- ") +
-		"\n\nReturn the corrected implementation plan JSON. Fix only these problems; remove or mark claims you cannot ground in the evidence catalog."
+		"\n\nReturn the corrected implementation plan JSON. Fix only these problems; remove or mark claims you cannot ground in the evidence catalog, and ensure every acceptance criterion appears in `traceability` mapped to a real step."
 	raw, err := sess.Synthesize(ctx, instr, out)
 	if err != nil {
 		return nil, err
@@ -212,7 +253,7 @@ func (e *Engine) repairPlan(ctx context.Context, sess *Session, snap *repo.Snaps
 	if jerr := json.Unmarshal(raw, &plan); jerr != nil {
 		return nil, schema.NewError(schema.CodeOutputInvalid, "repaired plan not parseable: %v", jerr)
 	}
-	if remaining := validatePlan(ctx, &plan, snap, evid, e.Cfg); len(remaining) > 0 {
+	if remaining := validatePlan(ctx, &plan, criteria, snap, evid, e.Cfg); len(remaining) > 0 {
 		return &plan, schema.NewError(schema.CodeOutputInvalid, "%s", strings.Join(remaining, "; "))
 	}
 	return &plan, nil

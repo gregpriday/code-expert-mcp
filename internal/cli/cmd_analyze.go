@@ -28,8 +28,8 @@ func stderrProgress(quiet bool) func(stage, detail string) {
 	}
 }
 
-func cmdPlan(ctx context.Context, args []string, mode schema.PlanMode) int {
-	fs := flag.NewFlagSet(string(mode), flag.ContinueOnError)
+func cmdPlan(ctx context.Context, args []string) int {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	root := fs.String("root", "", "repository root (default: CLAUDE_PROJECT_DIR or cwd)")
 	profile := fs.String("profile", "", "fast | balanced | deep")
 	format := fs.String("format", "markdown", "markdown | json | both")
@@ -66,10 +66,66 @@ func cmdPlan(ctx context.Context, args []string, mode schema.PlanMode) int {
 	req := schema.PlanRequest{
 		Root:         *root,
 		Instructions: instructions,
-		Mode:         mode,
 		Profile:      schema.AnalysisProfile(*profile),
 	}
 	res, err := a.Engine.Plan(ctx, req, workflow.RunOptions{Progress: stderrProgress(*quiet)})
+	if err != nil {
+		return fail(err)
+	}
+
+	jsonOut, _ := report.PlanJSON(res)
+	if err := emit(res.Markdown, jsonOut, *format, *output); err != nil {
+		return fail(err)
+	}
+	return exitOK
+}
+
+func cmdHelp(ctx context.Context, args []string) int {
+	fs := flag.NewFlagSet("help", flag.ContinueOnError)
+	root := fs.String("root", "", "repository root (default: CLAUDE_PROJECT_DIR or cwd)")
+	answerType := fs.String("answer-type", "", "auto | explain | diagnose | decide | unblock")
+	profile := fs.String("profile", "", "fast | balanced | deep")
+	format := fs.String("format", "markdown", "markdown | json | both")
+	output := fs.String("output", "", "write the report to this file")
+	questionFile := fs.String("question-file", "", "read the question from a file")
+	quiet := fs.Bool("quiet", false, "suppress progress output")
+	noCache := fs.Bool("no-cache", false, "disable the cache for this run")
+	if err := fs.Parse(args); err != nil {
+		return exitInvalidArgs
+	}
+	if err := validateProfile(*profile); err != nil {
+		return fail(err)
+	}
+	if err := validateFormat(*format); err != nil {
+		return fail(err)
+	}
+	if err := validateAnswerType(*answerType); err != nil {
+		return fail(err)
+	}
+
+	question, err := gatherInstructions(fs.Args(), *questionFile)
+	if err != nil {
+		return fail(err)
+	}
+	if question == "" {
+		return fail(schema.NewError(schema.CodeInvalidArgument, "provide a question as an argument or via --question-file"))
+	}
+
+	a, err := app.Build(app.BuildOptions{Root: *root, Quiet: *quiet, DisableCache: *noCache})
+	if err != nil {
+		return fail(err)
+	}
+	if err := a.RequireAPIKey(); err != nil {
+		return fail(err)
+	}
+
+	req := schema.HelpRequest{
+		Root:       *root,
+		Question:   question,
+		AnswerType: schema.HelpAnswerType(*answerType),
+		Profile:    schema.AnalysisProfile(*profile),
+	}
+	res, err := a.Engine.Help(ctx, req, workflow.RunOptions{Progress: stderrProgress(*quiet)})
 	if err != nil {
 		return fail(err)
 	}

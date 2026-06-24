@@ -24,8 +24,11 @@ func resolveProfile(requested schema.AnalysisProfile, configured string) schema.
 }
 
 // resolveLimits combines configuration, profile, and per-request budget into the
-// enforced ceilings. Request values win but are clamped to safety maxima.
-func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.Budget) budget.Limits {
+// enforced ceilings. Per-request overrides may only LOWER a limit, never raise it
+// above the configured safety maximum: every override is clamped with clampDown.
+// A retrieval override (MaxFileReads/MaxContextTokens) is treated identically to
+// the equivalent budget field.
+func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.Budget, ret schema.RetrievalOpts) budget.Limits {
 	l := budget.Limits{
 		Timeout:            cfg.Provider.RequestTimeout.Std(),
 		MaxModelToolRounds: cfg.Retrieval.MaxModelToolRounds,
@@ -34,6 +37,7 @@ func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.B
 		MaxBytesRead:       cfg.Retrieval.MaxBytesRead,
 		MaxContextTokens:   cfg.Retrieval.MaxContextTokens,
 		MaxOutputTokens:    cfg.Models.MaxOutputTokens,
+		MaxCheckSeconds:    checkSecondsCeiling(cfg.Checks.MaxTotalTime.Std()),
 	}
 	switch profile {
 	case schema.ProfileFast:
@@ -45,31 +49,91 @@ func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.B
 		l.MaxModelCalls = cfg.ProfileLimits.MaxModelCallsBalanced
 	}
 
+	// A retrieval override folds into the equivalent budget field before clamping,
+	// so the two never disagree; the budget field wins when both are set.
+	if ret.MaxFileReads > 0 && b.MaxFilesRead == 0 {
+		b.MaxFilesRead = ret.MaxFileReads
+	}
+	if ret.MaxContextTokens > 0 && b.MaxContextTokens == 0 {
+		b.MaxContextTokens = ret.MaxContextTokens
+	}
+
 	if b.TimeoutSeconds > 0 {
-		l.Timeout = time.Duration(b.TimeoutSeconds) * time.Second
+		l.Timeout = clampDownDuration(time.Duration(b.TimeoutSeconds)*time.Second, l.Timeout)
 	}
 	if b.MaxModelCalls > 0 {
-		l.MaxModelCalls = b.MaxModelCalls
+		l.MaxModelCalls = clampDown(b.MaxModelCalls, l.MaxModelCalls)
 	}
 	if b.MaxModelToolRounds > 0 {
-		l.MaxModelToolRounds = b.MaxModelToolRounds
+		l.MaxModelToolRounds = clampDown(b.MaxModelToolRounds, l.MaxModelToolRounds)
 	}
 	if b.MaxInternalToolCalls > 0 {
-		l.MaxInternalTools = b.MaxInternalToolCalls
+		l.MaxInternalTools = clampDown(b.MaxInternalToolCalls, l.MaxInternalTools)
 	}
 	if b.MaxFilesRead > 0 {
-		l.MaxFilesRead = b.MaxFilesRead
+		l.MaxFilesRead = clampDown(b.MaxFilesRead, l.MaxFilesRead)
 	}
 	if b.MaxBytesRead > 0 {
-		l.MaxBytesRead = int64(b.MaxBytesRead)
+		l.MaxBytesRead = clampDown64(int64(b.MaxBytesRead), l.MaxBytesRead)
 	}
 	if b.MaxContextTokens > 0 {
-		l.MaxContextTokens = b.MaxContextTokens
+		l.MaxContextTokens = clampDown(b.MaxContextTokens, l.MaxContextTokens)
 	}
 	if b.MaxOutputTokens > 0 {
-		l.MaxOutputTokens = b.MaxOutputTokens
+		l.MaxOutputTokens = clampDown(b.MaxOutputTokens, l.MaxOutputTokens)
+	}
+	if b.MaxCheckSeconds > 0 {
+		l.MaxCheckSeconds = clampDown(b.MaxCheckSeconds, l.MaxCheckSeconds)
 	}
 	return l
+}
+
+// checkSecondsCeiling converts a configured check time budget to whole seconds
+// without truncating a positive sub-second budget to 0 (which clampDown would
+// then read as "no ceiling" and let a per-request value exceed it).
+func checkSecondsCeiling(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	secs := int(d / time.Second)
+	if secs == 0 {
+		secs = 1
+	}
+	return secs
+}
+
+// clampDown returns the requested value bounded by a configured maximum. A
+// non-positive max means "no configured ceiling", so the request is honored as-is
+// (callers without a configured limit get exactly what they ask for). A
+// non-positive request is treated as "unset" and returns the max unchanged.
+func clampDown(requested, max int) int {
+	if requested <= 0 {
+		return max
+	}
+	if max > 0 && requested > max {
+		return max
+	}
+	return requested
+}
+
+func clampDown64(requested, max int64) int64 {
+	if requested <= 0 {
+		return max
+	}
+	if max > 0 && requested > max {
+		return max
+	}
+	return requested
+}
+
+func clampDownDuration(requested, max time.Duration) time.Duration {
+	if requested <= 0 {
+		return max
+	}
+	if max > 0 && requested > max {
+		return max
+	}
+	return requested
 }
 
 // synthesisModel selects the model and reasoning effort for final synthesis

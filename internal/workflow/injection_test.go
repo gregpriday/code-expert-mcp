@@ -31,7 +31,7 @@ func TestUntrustedContentInjection(t *testing.T) {
 
 	eng := newTestEngine(rel)
 	if _, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Plan a fix for the nil dereference", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Plan a fix for the nil dereference",
 	}, RunOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}

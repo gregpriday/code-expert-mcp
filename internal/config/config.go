@@ -277,4 +277,8 @@ type CheckCommand struct {
 	Timeout   Duration `toml:"timeout"`
 	Languages []string `toml:"languages"`
 	Enabled   bool     `toml:"enabled"`
+	// Safe marks a read-only analyzer (formatter check, linter, type-checker) that
+	// the "safe" verification mode may run. Leave false for builds and test suites,
+	// which only run under "configured" or "deep".
+	Safe bool `toml:"safe"`
 }

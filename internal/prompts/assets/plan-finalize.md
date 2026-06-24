@@ -12,6 +12,7 @@ No repository tools are available in this pass. Work solely from the evidence al
 - **Explicit about tests and validation.** For each step, state how it will be tested and which validation commands (build, lint, type-check, test) confirm it. Do not leave steps unverified.
 - **Clear about assumptions and unknowns.** State each assumption plainly. Where information is missing, record it as an unknown and include an investigation step rather than guessing.
 - **Scoped to the request.** Address what was asked. Do not expand scope, add unrelated refactors, or gold-plate.
+- **Traceable to every acceptance criterion.** Populate `traceability`: one entry per acceptance criterion the caller supplied, mapping it to the `step_ids` that implement it and the `tests` (validation descriptions or commands) that confirm it. Every criterion must map to at least one real step — a plan that leaves a criterion unimplemented is incomplete. If a criterion cannot be satisfied, do not omit it; record it with the blocking unknown instead.
 - **No code patches.** Describe what to change and why. Do not include diffs, full file rewrites, or code blocks meant to be applied.
 
 ## Evidence grounding

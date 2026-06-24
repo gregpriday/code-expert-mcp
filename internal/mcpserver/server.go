@@ -11,7 +11,7 @@ import (
 	"github.com/gregpriday/codeexpert/internal/workflow"
 )
 
-const serverInstructions = `CodeExpert performs read-only repository planning, engineering help, and code review. It never edits the repository. Use codeexpert_plan for planning or help (mode="help") and codeexpert_review for Git changes. Results may be long-running and include structured evidence.`
+const serverInstructions = `CodeExpert performs read-only repository planning, engineering help, and code review. It never edits the repository. Use codeexpert_plan for implementation plans, codeexpert_help for focused engineering questions, and codeexpert_review for reviewing Git changes. Results may be long-running and include structured evidence.`
 
 // Deps are the dependencies the server needs.
 type Deps struct {

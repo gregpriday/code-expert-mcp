@@ -11,7 +11,84 @@ import (
 	"testing"
 
 	"github.com/gregpriday/codeexpert/internal/config"
+	"github.com/gregpriday/codeexpert/internal/schema"
 )
+
+// freezeDirSnapshot writes files to a fresh dir, freezes a snapshot, and returns
+// both so a test can mutate the working tree mid-run.
+func freezeDirSnapshot(t *testing.T, cfg config.Config, files map[string]string) (string, *Snapshot) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := ResolveRoot(DefaultRoot(dir), cfg.Repository.FollowSymlinks, nil)
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	snap, err := BuildSnapshot(context.Background(), root, cfg.Repository)
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	return dir, snap
+}
+
+// TestSnapshotStaleOnMidRunEdit proves the immutability guarantee: a working-tree
+// edit after freezing makes the next (uncached) read fail with a typed
+// stale-snapshot error rather than silently returning post-edit bytes under the
+// frozen snapshot ID.
+func TestSnapshotStaleOnMidRunEdit(t *testing.T) {
+	original := "package main\n\nfunc main() {}\n"
+	dir, snap := freezeDirSnapshot(t, config.Defaults(), map[string]string{"main.go": original})
+	ctx := context.Background()
+
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() { panic(1) }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := snap.ReadFile(ctx, "main.go")
+	if err == nil {
+		t.Fatal("expected a stale-snapshot error after a mid-run edit")
+	}
+	if code := schema.AsToolError(err).Code; code != schema.CodeSnapshotChanged {
+		t.Fatalf("stale read error code = %s, want %s", code, schema.CodeSnapshotChanged)
+	}
+	if !snap.Stale() {
+		t.Error("snapshot should report Stale() after a divergent read")
+	}
+}
+
+// TestSnapshotCachedReadImmuneToLaterEdit proves that once content is frozen into
+// the read cache, a later working-tree edit cannot change what the snapshot
+// returns: the run keeps seeing the original bytes.
+func TestSnapshotCachedReadImmuneToLaterEdit(t *testing.T) {
+	original := "package main\n\nfunc main() {}\n"
+	dir, snap := freezeDirSnapshot(t, config.Defaults(), map[string]string{"main.go": original})
+	ctx := context.Background()
+
+	fc1, err := snap.ReadFile(ctx, "main.go") // freezes original into the cache
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("EDITED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fc2, err := snap.ReadFile(ctx, "main.go") // served from cache → original
+	if err != nil {
+		t.Fatalf("cached read after edit must not error: %v", err)
+	}
+	if string(fc1.Bytes) != original || string(fc2.Bytes) != original {
+		t.Errorf("cached read leaked post-edit bytes: %q", string(fc2.Bytes))
+	}
+	if snap.Stale() {
+		t.Error("a cache-served read must not mark the snapshot stale")
+	}
+}
 
 // scanLinesOracle reproduces bufio.Scanner's line splitting, the behavior
 // LineOffsets must stay consistent with.

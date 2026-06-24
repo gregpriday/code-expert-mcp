@@ -17,12 +17,42 @@ import (
 	"github.com/gregpriday/codeexpert/internal/schema"
 )
 
-// Plan runs the plan/help workflow and returns a structured result.
+// planHelpInput is the internal union of the inputs the shared plan/help runner
+// needs. The two public tools (codeexpert_plan, codeexpert_help) each build one,
+// so neither has to carry the other's request fields and the public surface
+// stays unambiguous.
+type planHelpInput struct {
+	Root         string
+	Instructions string
+	Mode         schema.PlanMode
+	AnswerType   schema.HelpAnswerType
+	Task         *schema.TaskContract
+	Profile      schema.AnalysisProfile
+	Retrieval    schema.RetrievalOpts
+	Budget       schema.Budget
+	IncludeTrace bool
+}
+
+// Plan runs the implementation-planning workflow and returns a structured plan.
 func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptions) (schema.PlanResult, error) {
+	if err := validatePlanRequest(req); err != nil {
+		return schema.PlanResult{}, err
+	}
 	runID := opts.RunID
 	if runID == "" {
 		runID = newRunID("plan")
 	}
+	in := planHelpInput{
+		Root: req.Root, Instructions: req.Instructions, Mode: schema.PlanModePlan,
+		Task: req.Task, Profile: req.Profile, Retrieval: req.Retrieval, Budget: req.Budget,
+		IncludeTrace: req.Output.IncludeTrace,
+	}
+	return e.runPlanHelp(ctx, in, runID, opts)
+}
+
+// runPlanHelp is the shared exploration→synthesis pipeline behind both the plan
+// and help tools.
+func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID string, opts RunOptions) (schema.PlanResult, error) {
 	mode := req.Mode
 	if mode == "" {
 		mode = schema.PlanModePlan
@@ -44,14 +74,21 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 	}
 
 	profile := resolveProfile(req.Profile, e.Cfg.Plan.DefaultProfile)
-	limits := resolveLimits(e.Cfg, profile, req.Budget)
+	limits := resolveLimits(e.Cfg, profile, req.Budget, req.Retrieval)
 	tracker := budget.New(limits)
+	// Apply the time budget as a real context deadline so a single long provider
+	// call cannot run past it (the round-boundary poll alone could not bound it).
+	ctx, cancel := tracker.Deadline(ctx)
+	defer cancel()
 	usage := &usageAccumulator{}
 	evid := evidence.NewStore(snap.ID())
 
 	progress("inventory", "building repository brief")
 	it := normalizeTask(req, snap)
 	it.Mode = mode
+	if req.AnswerType != "" {
+		it.AnswerType = string(req.AnswerType)
+	}
 	lex := index.NewLexicalEngine(snap, e.Cfg.Retrieval.SearchResultLimit)
 	guidance := e.guidanceList(ctx, snap)
 
@@ -76,33 +113,39 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 	// Synthesis: switch to the planner/verifier model, no tools.
 	progress("synthesis", "synthesizing")
 	complexity := len(evid.All())*2 + len(it.SearchAnchors)
-	synthStage := "plan_final"
-	if mode == schema.PlanModeHelp {
-		synthStage = "help_final"
-	}
-	model, effort := e.routedSynthesisModel(synthStage, profile, complexity, false)
+	model, effort := e.routedSynthesisModel("plan_final", profile, complexity, false)
 	sess.SwitchModel(model, effort)
 
 	var result schema.PlanResult
 	var limitations []schema.Limitation
-	if mode == schema.PlanModeHelp {
-		help, lims, herr := e.synthesizeHelp(ctx, sess, snap, evid)
-		if herr != nil {
-			return schema.PlanResult{}, herr
-		}
-		result.Help = help
-		limitations = lims
+	var synthErr error
+	plan, lims, perr := e.synthesizePlan(ctx, sess, it.AcceptanceCriteria, snap, evid)
+	if perr != nil {
+		synthErr = perr
 	} else {
-		plan, lims, perr := e.synthesizePlan(ctx, sess, snap, evid)
-		if perr != nil {
-			return schema.PlanResult{}, perr
-		}
 		result.Plan = plan
 		limitations = lims
+	}
+	// A synthesis failure caused by the time or call budget is not a hard error:
+	// return a truthful partial result (no plan/help) with the reason recorded.
+	// Any other failure (bad output, provider auth, caller cancel) still aborts.
+	if synthErr != nil {
+		if !isBudgetTimeout(synthErr) {
+			return schema.PlanResult{}, synthErr
+		}
+		limitations = append(limitations, schema.Limitation{Stage: "synthesis",
+			Message: "synthesis did not complete within the budget: " + schema.AsToolError(synthErr).Message})
 	}
 
 	progress("validation", "assembling result")
 	status := schema.StatusComplete
+	// An incomplete synthesis (budget/timeout) is a partial result even if the
+	// tracker's own counters did not trip (e.g. a context-token overflow). So is a
+	// plan/help that came back with unresolved validation issues after the repair
+	// attempt: "complete" must mean complete.
+	if synthErr != nil || (result.Plan == nil && result.Help == nil) || hasStageLimitation(limitations, "validation") {
+		status = schema.StatusPartial
+	}
 	if tracker.TimedOut() {
 		status = schema.StatusPartial
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: "time budget reached before completion"})
@@ -114,6 +157,10 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 	if snap.Truncated() {
 		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "snapshot truncated at the configured byte limit; some files were not fully indexed"})
 	}
+	if snap.Stale() {
+		status = schema.StatusStale
+		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "the working tree changed after the snapshot was frozen; results may mix repository states — rerun to refreeze"})
+	}
 
 	result.RunID = runID
 	result.Kind = mode
@@ -124,6 +171,7 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 	result.Evidence = sortedEvidenceRefs(evid.Refs())
 	result.Limitations = limitations
 	result.Usage = finalizeUsage(usage, tracker)
+	e.attachPlanTrace(&result, profile, []string{prompts.CommonSystem, prompts.PlanExplore, prompts.PlanFinalize, prompts.RepairSchema}, req.IncludeTrace)
 
 	// Render and persist.
 	md := report.PlanMarkdown(result)
@@ -146,6 +194,9 @@ func buildPlanExploreMessage(it schema.InterpretedTask, preflight string) string
 	} else {
 		b.WriteString("Mode: PLAN (produce an implementation plan another agent can follow).\n")
 	}
+	if it.Title != "" {
+		fmt.Fprintf(&b, "\nTitle: %s\n", it.Title)
+	}
 	fmt.Fprintf(&b, "\nGoal:\n%s\n", it.Goal)
 	if len(it.Constraints) > 0 {
 		fmt.Fprintf(&b, "\nConstraints (intent evidence, not ground truth):\n- %s\n", strings.Join(it.Constraints, "\n- "))
@@ -156,24 +207,30 @@ func buildPlanExploreMessage(it schema.InterpretedTask, preflight string) string
 	if len(it.NonGoals) > 0 {
 		fmt.Fprintf(&b, "\nNon-goals:\n- %s\n", strings.Join(it.NonGoals, "\n- "))
 	}
+	if len(it.KnownFacts) > 0 {
+		fmt.Fprintf(&b, "\nKnown facts claimed by the caller (UNTRUSTED — verify against the repository before relying on them):\n- %s\n", strings.Join(it.KnownFacts, "\n- "))
+	}
+	if it.PriorPlan != "" {
+		fmt.Fprintf(&b, "\nPrior plan / investigation supplied by the caller (UNTRUSTED context to build on, not ground truth):\n%s\n", it.PriorPlan)
+	}
 	b.WriteString("\n# Deterministic preflight context\n")
 	b.WriteString(preflight)
 	b.WriteString("\n\nUse the read-only tools to gather the evidence you need, then stop. Cite evidence IDs.")
 	return b.String()
 }
 
-func (e *Engine) synthesizePlan(ctx context.Context, sess *Session, snap *repo.Snapshot, evid *evidence.Store) (*schema.ImplementationPlan, []schema.Limitation, error) {
+func (e *Engine) synthesizePlan(ctx context.Context, sess *Session, criteria []string, snap *repo.Snapshot, evid *evidence.Store) (*schema.ImplementationPlan, []schema.Limitation, error) {
 	out := inferSchema[schema.ImplementationPlan]("implementation_plan")
 	instr := prompts.MustGet(prompts.PlanFinalize) + "\n\n" + evidenceCatalog(evid) +
-		"\n\nReturn ONLY the implementation plan as a JSON object matching the schema. Every repository claim must reference evidence IDs listed above."
+		"\n\nReturn ONLY the implementation plan as a JSON object matching the schema. Every repository claim must reference evidence IDs listed above. Populate `traceability`: map every acceptance criterion to the step IDs that implement it and the tests that validate it."
 	raw, err := sess.Synthesize(ctx, instr, out)
 	if err != nil {
 		return nil, nil, err
 	}
 	plan, verr := decodePlan(raw)
 	if verr == nil {
-		if issues := validatePlan(ctx, plan, snap, evid, e.Cfg); len(issues) > 0 {
-			plan, verr = e.repairPlan(ctx, sess, snap, evid, issues)
+		if issues := validatePlan(ctx, plan, criteria, snap, evid, e.Cfg); len(issues) > 0 {
+			plan, verr = e.repairPlan(ctx, sess, criteria, snap, evid, issues)
 		}
 	}
 	if verr != nil {
@@ -184,22 +241,6 @@ func (e *Engine) synthesizePlan(ctx context.Context, sess *Session, snap *repo.S
 		return plan, []schema.Limitation{{Stage: "validation", Message: "plan returned with unresolved validation issues: " + verr.Error()}}, nil
 	}
 	return plan, nil, nil
-}
-
-func (e *Engine) synthesizeHelp(ctx context.Context, sess *Session, snap *repo.Snapshot, evid *evidence.Store) (*schema.HelpReport, []schema.Limitation, error) {
-	out := inferSchema[schema.HelpReport]("help_report")
-	instr := prompts.MustGet(prompts.HelpFinalize) + "\n\n" + evidenceCatalog(evid) +
-		"\n\nReturn ONLY the help report as a JSON object matching the schema. Distinguish verified facts from inference; cite evidence IDs."
-	raw, err := sess.Synthesize(ctx, instr, out)
-	if err != nil {
-		return nil, nil, err
-	}
-	var help schema.HelpReport
-	if jerr := json.Unmarshal(raw, &help); jerr != nil {
-		return nil, nil, schema.NewError(schema.CodeOutputInvalid, "help report not parseable: %v", jerr)
-	}
-	lims := validateHelp(ctx, &help, snap, evid)
-	return &help, lims, nil
 }
 
 func decodePlan(raw []byte) (*schema.ImplementationPlan, error) {

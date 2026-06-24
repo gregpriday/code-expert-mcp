@@ -17,6 +17,22 @@ type ImplementationPlan struct {
 	OpenQuestions       []OpenQuestion      `json:"open_questions"`
 	DefinitionOfDone    []string            `json:"definition_of_done"`
 	AgentHandoff        string              `json:"agent_handoff"`
+	// Traceability maps every acceptance criterion to the steps and validation
+	// that satisfy it, so a plan can be checked for full criterion coverage. It is
+	// required to cover each acceptance criterion the caller supplied.
+	Traceability []CriterionCoverage `json:"traceability,omitempty"`
+}
+
+// CriterionCoverage records which steps implement an acceptance criterion and how
+// the criterion is validated. Validation deterministically enforces that every
+// criterion maps to at least one real step (criterion→step coverage); the test
+// path follows from each step's own validation, which the per-step validation
+// gate (RequireValidationPerStep) requires. Tests is the model's explicit
+// criterion-level test note and is not separately required.
+type CriterionCoverage struct {
+	Criterion string   `json:"criterion"`
+	StepIDs   []string `json:"step_ids"`
+	Tests     []string `json:"tests,omitempty"`
 }
 
 // PlanStep is one ordered, dependency-aware unit of implementation work.

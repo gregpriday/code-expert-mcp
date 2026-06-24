@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -168,12 +169,14 @@ func BuildReviewSnapshot(ctx context.Context, snap *Snapshot, target schema.Revi
 		return nil, err
 	}
 
+	untrackedSet := map[string]bool{}
 	includeUntracked := manifest.IncludesWT && (target.IncludeUntracked == nil || *target.IncludeUntracked) && cfg.IncludeUntracked
 	if includeUntracked {
 		untracked, uerr := gc.LsFilesUntracked(ctx)
 		if uerr == nil {
 			for _, p := range untracked {
 				changed = append(changed, git.ChangedFile{Path: p, Status: "A"})
+				untrackedSet[p] = true
 			}
 		}
 	}
@@ -187,12 +190,23 @@ func BuildReviewSnapshot(ctx context.Context, snap *Snapshot, target schema.Revi
 			Added:     cf.Added,
 			Deleted:   cf.Deleted,
 			Binary:    cf.Binary,
+			Untracked: untrackedSet[cf.Path],
 			Generated: cls.isGenerated(cf.Path),
 			Vendored:  cls.isVendored(cf.Path),
 			Language:  DetectLanguage(cf.Path, nil),
 		}
-		// Freeze the unified diff text for tracked changes.
-		if cf.Status != "?" {
+		switch {
+		case untrackedSet[cf.Path]:
+			// Untracked files are not part of any git diff, so synthesize a
+			// whole-file addition from the frozen working-tree content. Without
+			// this an added-but-untracked file reaches the reviewer with no
+			// changed content at all.
+			if fc, rerr := snap.ReadFile(ctx, cf.Path); rerr == nil && !fc.Meta.Binary {
+				out.Diff, out.NewRanges, out.Added = syntheticAddDiff(cf.Path, fc.Bytes)
+			}
+		case cf.Status != "?":
+			// Freeze the unified diff text for tracked changes (adds, modifies,
+			// deletes, renames, copies all flow through git diff).
 			if diff, derr := gc.UnifiedDiff(ctx, spec, cf.Path, 3); derr == nil {
 				out.Diff = diff
 				out.NewRanges = parseNewRanges(diff)
@@ -205,6 +219,39 @@ func BuildReviewSnapshot(ctx context.Context, snap *Snapshot, target schema.Revi
 
 	rs.manifest = manifest
 	return rs, nil
+}
+
+// syntheticAddDiff renders a whole-file addition as a unified diff for content
+// that git diff cannot produce (an untracked file). Every line is an addition,
+// so the head range covers the whole file. It returns the diff text, the single
+// covering range, and the added-line count.
+func syntheticAddDiff(path string, content []byte) (string, []LineRange, int) {
+	if len(content) == 0 {
+		return "", nil, 0
+	}
+	// Split into lines without collapsing interior blank lines. A trailing newline
+	// is a line terminator, not an extra empty line, so drop only that final ""; a
+	// file with no trailing newline keeps its last line and gets the git marker.
+	noTrailingNewline := content[len(content)-1] != '\n'
+	lines := strings.Split(string(content), "\n")
+	if !noTrailingNewline {
+		lines = lines[:len(lines)-1]
+	}
+	n := len(lines)
+	if n == 0 {
+		return "", nil, 0
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, n)
+	for i, ln := range lines {
+		b.WriteString("+")
+		b.WriteString(ln)
+		b.WriteString("\n")
+		if i == n-1 && noTrailingNewline {
+			b.WriteString("\\ No newline at end of file\n")
+		}
+	}
+	return b.String(), []LineRange{{Start: 1, End: n}}, n
 }
 
 // emptyTreeHash is Git's well-known empty tree object, used for root-commit diffs.

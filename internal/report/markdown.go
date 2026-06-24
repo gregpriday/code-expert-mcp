@@ -162,6 +162,9 @@ func writeReviewFinding(b *strings.Builder, f schema.ReviewFinding) {
 	if f.Blocking {
 		meta += " · blocking"
 	}
+	if f.Verification.Status != "" {
+		meta += " · " + string(f.Verification.Status)
+	}
 	if loc := formatLocation(f.Location.Path, f.Location.StartLine, f.Location.EndLine); loc != "" {
 		meta += " · " + loc
 	}
@@ -424,6 +427,21 @@ func writePlanBody(b *strings.Builder, p schema.ImplementationPlan) {
 		b.WriteString("\n")
 	}
 
+	if len(p.Traceability) > 0 {
+		b.WriteString("## Acceptance-criterion traceability\n\n")
+		for _, cc := range p.Traceability {
+			fmt.Fprintf(b, "- %s", cc.Criterion)
+			if len(cc.StepIDs) > 0 {
+				fmt.Fprintf(b, " → steps %s", joinCode(cc.StepIDs))
+			}
+			b.WriteString("\n")
+			if len(cc.Tests) > 0 {
+				fmt.Fprintf(b, "  - Validated by: %s\n", strings.Join(cc.Tests, "; "))
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	if len(p.DefinitionOfDone) > 0 {
 		b.WriteString("## Definition of done\n\n")
 		writeBullets(b, p.DefinitionOfDone)
@@ -537,10 +555,33 @@ func writePlanStep(b *strings.Builder, s schema.PlanStep) {
 // from each cause's Verified flag and list their reasoning and cited evidence
 // IDs when present.
 func writeHelpBody(b *strings.Builder, h schema.HelpReport) {
+	if h.DirectAnswer != "" {
+		b.WriteString("## Answer\n\n")
+		b.WriteString(h.DirectAnswer)
+		b.WriteString("\n\n")
+	}
+	if h.RecommendedNextAction != "" {
+		fmt.Fprintf(b, "**Recommended next action:** %s\n\n", h.RecommendedNextAction)
+	}
+
 	if h.ProblemRestatement != "" {
 		b.WriteString("## Problem restatement\n\n")
 		b.WriteString(h.ProblemRestatement)
 		b.WriteString("\n\n")
+	}
+
+	if len(h.VerifiedFacts) > 0 {
+		b.WriteString("## Verified facts\n\n")
+		for _, s := range h.VerifiedFacts {
+			writeEvidenceStatement(b, s)
+		}
+		b.WriteString("\n")
+	}
+
+	if len(h.Inferences) > 0 {
+		b.WriteString("## Inferences\n\n")
+		writeBullets(b, h.Inferences)
+		b.WriteString("\n")
 	}
 
 	if len(h.ObservedEvidence) > 0 {

@@ -194,8 +194,10 @@ func (r *Registry) handleRead(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, err
 	}
 	if r.tracker != nil {
-		if meta, ok := r.snap.Stat(p.Path); ok {
-			if err := r.tracker.ChargeFileRead(meta.Size); err != nil {
+		// File-count budget here; the returned content's bytes are charged
+		// uniformly for every tool in Registry.Execute.
+		if _, ok := r.snap.Stat(p.Path); ok {
+			if err := r.tracker.ChargeFile(); err != nil {
 				return nil, err
 			}
 		}

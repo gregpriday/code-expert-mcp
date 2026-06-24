@@ -10,7 +10,7 @@ import (
 // match it, so an orphaned or renamed asset fails the build's tests.
 func canonicalIDs() []string {
 	return []string{
-		CommonSystem, PlanExplore, PlanFinalize, HelpFinalize,
+		CommonSystem, PlanExplore, PlanFinalize, HelpExplore, HelpFinalize,
 		ReviewDiffLocal, ReviewContext, ReviewSpecialist, ReviewVerify, RepairSchema,
 	}
 }

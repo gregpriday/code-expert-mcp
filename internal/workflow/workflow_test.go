@@ -40,7 +40,7 @@ func (f *fakeProvider) Generate(ctx context.Context, req provider.GenerationRequ
 	case strings.Contains(name, "implementation_plan"):
 		body = `{"goal":"Test goal","current_behavior":[],"constraints":[],"assumptions":[],"impacted_areas":[],"recommended_approach":"Do the thing","steps":[{"id":"P1","title":"Edit file","objective":"change it","depends_on":[],"files":[{"path":"` + f.existingFile + `","action":"modify"}],"detailed_changes":["change x"],"invariants":[],"validation":[{"description":"run tests"}],"risks":[],"evidence_ids":[]}],"test_plan":[{"description":"go test"}],"compatibility":[],"risks":[],"alternatives":[],"open_questions":[],"definition_of_done":["done"],"agent_handoff":"go"}`
 	case strings.Contains(name, "help_report"):
-		body = `{"problem_restatement":"It breaks","observed_evidence":[],"likely_causes":[{"hypothesis":"race","likelihood":"medium","verified":false}],"recommended_direction":"add a lock","investigation_steps":[],"validation_steps":[],"alternatives":[],"risks":[],"assumptions":[],"confidence":"medium"}`
+		body = `{"direct_answer":"It crashes because a shared map is written from two goroutines without a lock.","answer_type":"diagnose","recommended_next_action":"add a mutex around the map writes","problem_restatement":"It breaks","verified_facts":[],"inferences":[],"likely_causes":[{"hypothesis":"race","likelihood":"medium","verified":false}],"recommended_direction":"add a lock","investigation_steps":[],"validation_steps":[],"alternatives":[],"risks":[],"assumptions":[],"confidence":"medium"}`
 	case strings.Contains(name, "review_candidates"):
 		body = `{"findings":[{"title":"Possible nil deref","category":"correctness","severity":"high","location":{"path":"` + f.existingFile + `","start_line":1,"end_line":2},"claim":"may panic","trigger":"when x is nil","impact":"crash","recommendation":"check nil first","assumptions":[],"evidence_ids":[]}]}`
 	case strings.Contains(name, "review_verdicts"):
@@ -83,7 +83,7 @@ func TestPlanEndToEnd(t *testing.T) {
 	dir, rel := tempGitRepo(t)
 	eng := newTestEngine(rel)
 	res, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Add a greeting flag to main.go", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Add a greeting flag to main.go",
 	}, RunOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -105,8 +105,8 @@ func TestPlanEndToEnd(t *testing.T) {
 func TestHelpEndToEnd(t *testing.T) {
 	dir, rel := tempGitRepo(t)
 	eng := newTestEngine(rel)
-	res, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Why does it crash?", Mode: schema.PlanModeHelp,
+	res, err := eng.Help(context.Background(), schema.HelpRequest{
+		Root: dir, Question: "Why does it crash?",
 	}, RunOptions{})
 	if err != nil {
 		t.Fatalf("help: %v", err)
@@ -116,6 +116,33 @@ func TestHelpEndToEnd(t *testing.T) {
 	}
 	if len(res.Help.LikelyCauses) == 0 {
 		t.Error("expected likely causes")
+	}
+}
+
+// TestContextTokenLimitYieldsPartial proves the context-token ceiling is actually
+// enforced: an absurdly low limit makes every model call exceed it, and the run
+// returns a truthful partial result (not a hard error, not a false "complete").
+func TestContextTokenLimitYieldsPartial(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	cfg := config.Defaults()
+	cfg.Cache.Enabled = false
+	cfg.Retrieval.MaxContextTokens = 1 // every request exceeds one token
+	eng := &Engine{Cfg: cfg, Provider: &fakeProvider{existingFile: rel}, Log: telemetry.Nop()}
+
+	res, err := eng.Plan(context.Background(), schema.PlanRequest{
+		Root: dir, Instructions: "Add a greeting flag to main.go",
+	}, RunOptions{})
+	if err != nil {
+		t.Fatalf("a context-budget overflow must yield a partial result, not an error: %v", err)
+	}
+	if res.Status != schema.StatusPartial {
+		t.Errorf("status = %s, want partial under a 1-token context budget", res.Status)
+	}
+	if res.Plan != nil {
+		t.Error("no plan should be synthesized when every model call is blocked by the context budget")
+	}
+	if len(res.Limitations) == 0 {
+		t.Error("a partial result must carry a limitation explaining why")
 	}
 }
 
@@ -197,7 +224,7 @@ func TestPlanPropagatesProviderError(t *testing.T) {
 	cfg.Cache.Enabled = false
 	eng := &Engine{Cfg: cfg, Provider: errorProvider{}, Log: telemetry.Nop()}
 	_, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Add a greeting flag", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Add a greeting flag",
 	}, RunOptions{})
 	if err == nil {
 		t.Fatal("expected Plan to propagate the provider failure")
@@ -213,7 +240,7 @@ func TestSessionRequestsAreStreamed(t *testing.T) {
 	cfg.Cache.Enabled = false
 	eng := &Engine{Cfg: cfg, Provider: rec, Log: telemetry.Nop()}
 	if _, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Add a greeting flag", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Add a greeting flag",
 	}, RunOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -264,5 +291,41 @@ func TestReviewEmptyChangeSet(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(res.Markdown), "safe to merge") || strings.Contains(strings.ToLower(res.Markdown), "approved") {
 		t.Error("review must never claim safe-to-merge or approved")
+	}
+}
+
+// TestRunTraceAttachedOnlyWhenRequested proves output.include_trace is now
+// truthful: the trace is attached only when asked, and carries the capability,
+// the exact prompt versions, and the per-stage ledger.
+func TestRunTraceAttachedOnlyWhenRequested(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	eng := newTestEngine(rel)
+	ctx := context.Background()
+
+	res, err := eng.Plan(ctx, schema.PlanRequest{Root: dir, Instructions: "Add a greeting flag"}, RunOptions{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if res.Trace != nil {
+		t.Error("trace must not be attached unless output.include_trace is set")
+	}
+
+	res2, err := eng.Plan(ctx, schema.PlanRequest{
+		Root: dir, Instructions: "Add a greeting flag", Output: schema.OutputOpts{IncludeTrace: true},
+	}, RunOptions{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if res2.Trace == nil {
+		t.Fatal("trace must be attached when output.include_trace is set")
+	}
+	if res2.Trace.Capability != "plan" {
+		t.Errorf("trace.capability = %q, want plan", res2.Trace.Capability)
+	}
+	if len(res2.Trace.PromptVersions) == 0 {
+		t.Error("trace must record the prompt versions used")
+	}
+	if len(res2.Trace.Stages) == 0 {
+		t.Error("trace must record the per-stage ledger")
 	}
 }

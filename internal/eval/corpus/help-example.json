@@ -1,0 +1,14 @@
+{
+  "id": "help-why-double-process",
+  "capability": "help",
+  "help": {
+    "root": "REPLACE_WITH_REPO_ROOT",
+    "question": "Why does the worker process some jobs twice?",
+    "answer_type": "diagnose",
+    "context": { "symptoms": ["duplicate side effects under load"] }
+  },
+  "expect": {
+    "must_complete": true,
+    "require_direct_answer": true
+  }
+}

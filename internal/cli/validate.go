@@ -21,6 +21,14 @@ func validateFormat(s string) error {
 	return schema.NewError(schema.CodeInvalidArgument, "invalid --format %q; must be markdown, json, or both", s)
 }
 
+func validateAnswerType(s string) error {
+	switch s {
+	case "", "auto", "explain", "diagnose", "decide", "unblock":
+		return nil
+	}
+	return schema.NewError(schema.CodeInvalidArgument, "invalid --answer-type %q; must be auto, explain, diagnose, decide, or unblock", s)
+}
+
 func validateScope(s string) error {
 	switch s {
 	case "working-tree", "staged", "unstaged", "range", "commit", "merge-base":

@@ -17,6 +17,7 @@ func TestToolAnnotationsAreReadOnlyOpenWorld(t *testing.T) {
 		tool *mcp.Tool
 	}{
 		{"plan", planToolDef()},
+		{"help", helpToolDef()},
 		{"review", reviewToolDef()},
 	}
 	for _, c := range cases {
@@ -47,6 +48,7 @@ func TestToolAnnotationsAreReadOnlyOpenWorld(t *testing.T) {
 func TestToolAnnotationsWireFormat(t *testing.T) {
 	defs := map[string]*mcp.Tool{
 		"plan":   planToolDef(),
+		"help":   helpToolDef(),
 		"review": reviewToolDef(),
 	}
 	for name, tool := range defs {
@@ -67,6 +69,42 @@ func TestToolAnnotationsWireFormat(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestThreePublicToolsAreDistinct locks the public surface to exactly three
+// unambiguous tools — plan, help, review — with distinct names and descriptions
+// that cross-reference each other, so a tool-selecting model is never forced to
+// pick a mode to reach one of the three core capabilities.
+func TestThreePublicToolsAreDistinct(t *testing.T) {
+	tools := []*mcp.Tool{planToolDef(), helpToolDef(), reviewToolDef()}
+	names := map[string]bool{}
+	for _, tl := range tools {
+		if !strings.HasPrefix(tl.Name, "codeexpert_") {
+			t.Errorf("tool name %q must be namespaced codeexpert_*", tl.Name)
+		}
+		if names[tl.Name] {
+			t.Errorf("duplicate tool name %q", tl.Name)
+		}
+		names[tl.Name] = true
+		if strings.TrimSpace(tl.Description) == "" {
+			t.Errorf("tool %q has no description", tl.Name)
+		}
+		if strings.Contains(strings.ToLower(tl.Description), `mode="`) {
+			t.Errorf("tool %q description still references a mode switch: %q", tl.Name, tl.Description)
+		}
+	}
+	for _, want := range []string{"codeexpert_plan", "codeexpert_help", "codeexpert_review"} {
+		if !names[want] {
+			t.Errorf("missing public tool %q", want)
+		}
+	}
+	// Each description should steer away from the other two tools.
+	if !strings.Contains(planToolDef().Description, "codeexpert_help") {
+		t.Error("plan description should point ambiguous diagnosis questions at codeexpert_help")
+	}
+	if !strings.Contains(helpToolDef().Description, "codeexpert_plan") {
+		t.Error("help description should point full-plan requests at codeexpert_plan")
 	}
 }
 

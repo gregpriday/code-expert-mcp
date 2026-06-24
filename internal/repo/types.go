@@ -19,6 +19,15 @@ type FileMeta struct {
 	Generated bool        `json:"generated"`
 	Vendored  bool        `json:"vendored"`
 	Language  string      `json:"language"`
+	// ContentFrozen is true when Hash is a content hash of the file's frozen bytes
+	// (the in-budget case), so a later read can be verified byte-for-byte against
+	// it. When false (oversized or over the snapshot byte budget), Hash is a
+	// synthetic path+size digest and a read is verified by size and modtime.
+	ContentFrozen bool `json:"-"`
+	// ModTime is the file's modification time (unix nanoseconds) at ingest, used
+	// to detect same-size in-place edits of oversized files that the size check
+	// alone would miss.
+	ModTime int64 `json:"-"`
 }
 
 // FileContent is a file's bytes plus metadata, returned by snapshot reads.
@@ -56,6 +65,7 @@ type ChangedFile struct {
 	Added     int         `json:"added"`
 	Deleted   int         `json:"deleted"`
 	Binary    bool        `json:"binary"`
+	Untracked bool        `json:"untracked,omitempty"`
 	Generated bool        `json:"generated"`
 	Vendored  bool        `json:"vendored"`
 	Language  string      `json:"language"`

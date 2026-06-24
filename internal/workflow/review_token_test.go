@@ -11,6 +11,7 @@ import (
 	"github.com/gregpriday/codeexpert/internal/evidence"
 	"github.com/gregpriday/codeexpert/internal/prompts"
 	"github.com/gregpriday/codeexpert/internal/provider"
+	"github.com/gregpriday/codeexpert/internal/repo"
 	"github.com/gregpriday/codeexpert/internal/schema"
 )
 
@@ -165,5 +166,66 @@ func TestCandidatePassesShareStablePrefix(t *testing.T) {
 	}
 	if len(briefs) < 3 {
 		t.Errorf("expected 3 distinct per-pass briefs in the second user message, got %d", len(briefs))
+	}
+}
+
+// TestBuildLocationPacketIncludesRealCode proves the verifier packet contains the
+// actual head source around the finding (with line numbers) — not just the
+// candidate's own description — so the verifier judges against code.
+func TestBuildLocationPacketIncludesRealCode(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	// Make a working-tree change so the file is in the manifest with a diff.
+	if err := os.WriteFile(filepath.Join(dir, rel),
+		[]byte("package main\n\nfunc main() {\n\tvar x *int\n\t_ = *x\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eng := newTestEngine(rel)
+	snap, err := eng.resolveAndSnapshot(context.Background(), dir, nil)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	rs, err := repo.BuildReviewSnapshot(context.Background(), snap, schema.ReviewTarget{Type: schema.TargetWorkingTree}, eng.Cfg.Repository)
+	if err != nil {
+		t.Fatalf("review snapshot: %v", err)
+	}
+	cand := mkCandidate(rel, 4, 5, schema.CategoryCorrectness, "check nil")
+	packet := eng.buildLocationPacket(context.Background(), rs, cand)
+	for _, want := range []string{"Frozen changed hunk", "Head source", "var x *int", "    4|"} {
+		if !strings.Contains(packet, want) {
+			t.Errorf("location packet missing %q:\n%s", want, packet)
+		}
+	}
+}
+
+// TestNumberedSnippetClampsPastEOF proves a location far past EOF still renders
+// the file tail (with line numbers) instead of an empty block.
+func TestNumberedSnippetClampsPastEOF(t *testing.T) {
+	content := []byte("line1\nline2\nline3\n")
+	// start/end well past the 3-line file would leave lo > hi without the clamp.
+	got := numberedSnippet(content, 100, 105, 4)
+	if got == "" {
+		t.Fatal("a past-EOF location must still render the file tail, got empty")
+	}
+	if !strings.Contains(got, "line3") {
+		t.Errorf("expected the file tail to render, got:\n%s", got)
+	}
+	// A normal in-range location renders the cited lines with numbers.
+	mid := numberedSnippet(content, 2, 2, 1)
+	if !strings.Contains(mid, "    2| line2") {
+		t.Errorf("expected numbered line 2, got:\n%s", mid)
+	}
+}
+
+func TestConfirmationFromEvidence(t *testing.T) {
+	cases := map[schema.EvidenceLevel]schema.ConfirmationStatus{
+		schema.EvidenceExecutable:  schema.ConfirmedByExecution,
+		schema.EvidenceTool:        schema.CorroboratedByCode,
+		schema.EvidenceCodePath:    schema.PlausibleCodePath,
+		schema.EvidenceSpeculative: schema.Unconfirmed,
+	}
+	for level, want := range cases {
+		if got := schema.ConfirmationFromEvidence(level); got != want {
+			t.Errorf("ConfirmationFromEvidence(%s) = %s, want %s", level, got, want)
+		}
 	}
 }
