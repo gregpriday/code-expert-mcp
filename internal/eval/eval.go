@@ -212,24 +212,18 @@ func caseRoot(c Case) string {
 	return ""
 }
 
-// fingerprintTree hashes a directory's file names and contents (excluding .git)
-// so the no-write grader can prove a run mutated nothing.
+// fingerprintTree hashes every file's name and contents under root, INCLUDING
+// .git, so the no-write grader catches any mutation to the working tree or Git
+// state — the read-only invariant covers both. (The engine runs only read-only
+// git commands, so .git stays byte-stable across a run, as the release-blocking
+// TestNoWriteInvariant also asserts.)
 func fingerprintTree(root string) string {
 	h := sha256.New()
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
-		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(os.PathSeparator)) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
 		fmt.Fprintf(h, "%s\n", rel)
 		if b, rerr := os.ReadFile(p); rerr == nil {
 			h.Write(b)

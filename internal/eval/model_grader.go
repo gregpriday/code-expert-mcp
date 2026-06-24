@@ -89,15 +89,33 @@ func outcomeText(out Outcome) string {
 }
 
 // firstJSONObject extracts the first balanced {...} object from a byte slice, so a
-// judge that wraps its JSON in prose still parses.
+// judge that wraps its JSON in prose still parses. Braces inside JSON strings are
+// ignored (tracking string state and escapes), so a reason like "extra } here"
+// does not truncate the object early.
 func firstJSONObject(b []byte) []byte {
 	start := bytes.IndexByte(b, '{')
 	if start < 0 {
 		return b
 	}
 	depth := 0
+	inStr := false
+	esc := false
 	for i := start; i < len(b); i++ {
-		switch b[i] {
+		c := b[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
 		case '{':
 			depth++
 		case '}':

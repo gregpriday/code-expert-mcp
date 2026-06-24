@@ -243,11 +243,19 @@ func TestApplyGatesAcceptsDeletionFindings(t *testing.T) {
 		t.Errorf("expected invalid_location suppression, got %+v", stats.ByReason)
 	}
 
-	// Marked as a deletion, it is accepted as a removed-content finding.
+	// Marked as a deletion (50-line base), an in-range finding is accepted.
 	stats = &schema.SuppressionStats{ByReason: map[string]int{}}
-	deleted := map[string]bool{"removed/api.go": true}
+	deleted := map[string]int{"removed/api.go": 50}
 	if got := applyGates([]verifiedCandidate{vc}, snap, evid, nil, deleted, cfg, schema.ReviewPolicy{}, stats); len(got) != 1 {
 		t.Fatalf("deletion finding should survive, got %d (suppressed %+v)", len(got), stats.ByReason)
+	}
+
+	// A deletion finding pointing past the end of the removed file is suppressed.
+	stats = &schema.SuppressionStats{ByReason: map[string]int{}}
+	past := mkVerified(mkCandidate("removed/api.go", 999999, 999999, schema.CategorySecurity, "restore the check"),
+		true, schema.EvidenceCodePath, true)
+	if got := applyGates([]verifiedCandidate{past}, snap, evid, nil, deleted, cfg, schema.ReviewPolicy{}, stats); len(got) != 0 {
+		t.Fatalf("a deletion finding past the base EOF must be suppressed, %d survived", len(got))
 	}
 }
 

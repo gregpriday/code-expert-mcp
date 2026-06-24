@@ -226,17 +226,30 @@ func BuildReviewSnapshot(ctx context.Context, snap *Snapshot, target schema.Revi
 // so the head range covers the whole file. It returns the diff text, the single
 // covering range, and the added-line count.
 func syntheticAddDiff(path string, content []byte) (string, []LineRange, int) {
-	lines := strings.Split(strings.TrimRight(string(content), "\n"), "\n")
 	if len(content) == 0 {
 		return "", nil, 0
 	}
+	// Split into lines without collapsing interior blank lines. A trailing newline
+	// is a line terminator, not an extra empty line, so drop only that final ""; a
+	// file with no trailing newline keeps its last line and gets the git marker.
+	noTrailingNewline := content[len(content)-1] != '\n'
+	lines := strings.Split(string(content), "\n")
+	if !noTrailingNewline {
+		lines = lines[:len(lines)-1]
+	}
 	n := len(lines)
+	if n == 0 {
+		return "", nil, 0
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, n)
-	for _, ln := range lines {
+	for i, ln := range lines {
 		b.WriteString("+")
 		b.WriteString(ln)
 		b.WriteString("\n")
+		if i == n-1 && noTrailingNewline {
+			b.WriteString("\\ No newline at end of file\n")
+		}
 	}
 	return b.String(), []LineRange{{Start: 1, End: n}}, n
 }

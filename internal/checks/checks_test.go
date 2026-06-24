@@ -110,7 +110,7 @@ func TestApplicableByMode(t *testing.T) {
 // TestRunOneRejectsPathExecutable proves an executable with a path separator is
 // refused, so a binary inside the repo can never be invoked.
 func TestRunOneRejectsPathExecutable(t *testing.T) {
-	_, err := runOne(context.Background(), t.TempDir(), nil, config.CheckCommand{Name: "evil", Argv: []string{"./payload"}})
+	_, err := runOne(context.Background(), t.TempDir(), nil, config.CheckCommand{Name: "evil", Argv: []string{"./payload"}}, 30*time.Second)
 	if err == nil {
 		t.Error("an executable with a path separator must be rejected")
 	}

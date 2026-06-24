@@ -37,7 +37,7 @@ func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.B
 		MaxBytesRead:       cfg.Retrieval.MaxBytesRead,
 		MaxContextTokens:   cfg.Retrieval.MaxContextTokens,
 		MaxOutputTokens:    cfg.Models.MaxOutputTokens,
-		MaxCheckSeconds:    int(cfg.Checks.MaxTotalTime.Std() / time.Second),
+		MaxCheckSeconds:    checkSecondsCeiling(cfg.Checks.MaxTotalTime.Std()),
 	}
 	switch profile {
 	case schema.ProfileFast:
@@ -86,6 +86,20 @@ func resolveLimits(cfg config.Config, profile schema.AnalysisProfile, b schema.B
 		l.MaxCheckSeconds = clampDown(b.MaxCheckSeconds, l.MaxCheckSeconds)
 	}
 	return l
+}
+
+// checkSecondsCeiling converts a configured check time budget to whole seconds
+// without truncating a positive sub-second budget to 0 (which clampDown would
+// then read as "no ceiling" and let a per-request value exceed it).
+func checkSecondsCeiling(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	secs := int(d / time.Second)
+	if secs == 0 {
+		secs = 1
+	}
+	return secs
 }
 
 // clampDown returns the requested value bounded by a configured maximum. A

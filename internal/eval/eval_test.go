@@ -163,3 +163,11 @@ func TestSeedCorpusParses(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstJSONObjectIgnoresBracesInStrings(t *testing.T) {
+	got := string(firstJSONObject([]byte(`prefix {"score":0.8,"reason":"has a } brace and \" quote"} trailing`)))
+	want := `{"score":0.8,"reason":"has a } brace and \" quote"}`
+	if got != want {
+		t.Errorf("firstJSONObject = %q, want %q", got, want)
+	}
+}

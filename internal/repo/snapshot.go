@@ -182,8 +182,11 @@ func (s *Snapshot) verifyFrozen(meta FileMeta, data []byte, li os.FileInfo, lerr
 		}
 		return nil
 	}
-	// Oversized/over-budget file: the frozen hash is path+size, so verify size.
-	if lerr == nil && li.Size() != meta.Size {
+	// Oversized/over-budget file: the frozen hash is synthetic (path+size), so the
+	// bytes cannot be compared. Verify size and modtime, which together catch an
+	// in-place edit that preserves the size. This is best-effort detection, not the
+	// byte-for-byte guarantee the content-frozen path provides.
+	if lerr == nil && (li.Size() != meta.Size || li.ModTime().UnixNano() != meta.ModTime) {
 		return staleError(meta.Path)
 	}
 	return nil
@@ -295,6 +298,7 @@ func (s *Snapshot) ingest(_ context.Context, paths []string) error {
 			Path:      rel,
 			Size:      size,
 			Mode:      li.Mode(),
+			ModTime:   li.ModTime().UnixNano(),
 			Tracked:   s.isGit && !isUntracked,
 			Untracked: isUntracked,
 			Vendored:  s.class.isVendored(rel),

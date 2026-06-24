@@ -104,6 +104,20 @@ func TestResolveLimitsClampsDownOnly(t *testing.T) {
 	}
 }
 
+// TestCheckSecondsCeiling proves a positive sub-second check budget does not
+// truncate to 0 (which clampDown would read as "no ceiling").
+func TestCheckSecondsCeiling(t *testing.T) {
+	if got := checkSecondsCeiling(500 * time.Millisecond); got != 1 {
+		t.Errorf("500ms ceiling = %d, want 1", got)
+	}
+	if got := checkSecondsCeiling(90 * time.Second); got != 90 {
+		t.Errorf("90s ceiling = %d, want 90", got)
+	}
+	if got := checkSecondsCeiling(0); got != 0 {
+		t.Errorf("0 ceiling = %d, want 0 (no limit)", got)
+	}
+}
+
 // TestRoutingSelectsTier proves [routing] drives per-stage model selection,
 // overriding the profile/complexity escalation, and that an unset stage falls
 // back to the legacy behavior.

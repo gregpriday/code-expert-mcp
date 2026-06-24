@@ -24,8 +24,11 @@ type ImplementationPlan struct {
 }
 
 // CriterionCoverage records which steps implement an acceptance criterion and how
-// the criterion is validated, making criterion-to-step-to-test coverage a
-// machine-checkable property of the plan rather than an implicit hope.
+// the criterion is validated. Validation deterministically enforces that every
+// criterion maps to at least one real step (criterion→step coverage); the test
+// path follows from each step's own validation, which the per-step validation
+// gate (RequireValidationPerStep) requires. Tests is the model's explicit
+// criterion-level test note and is not separately required.
 type CriterionCoverage struct {
 	Criterion string   `json:"criterion"`
 	StepIDs   []string `json:"step_ids"`

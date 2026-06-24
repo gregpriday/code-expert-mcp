@@ -82,3 +82,17 @@ func TestHelpEndToEndDirectAnswer(t *testing.T) {
 		t.Error("markdown should lead with an Answer section")
 	}
 }
+
+// TestValidateHelpReportAutoDiagnose proves an auto request that returns a
+// diagnosis with no hypotheses is still caught (validated against the returned
+// answer type, not just the requested one).
+func TestValidateHelpReportAutoDiagnose(t *testing.T) {
+	h := &schema.HelpReport{DirectAnswer: "it races", AnswerType: schema.AnswerDiagnose}
+	if issues := validateHelpReport(h, schema.AnswerAuto); len(issues) == 0 {
+		t.Error("an auto run that returns a diagnosis with no hypotheses should be flagged")
+	}
+	h.LikelyCauses = []schema.CauseHypothesis{{Hypothesis: "race"}}
+	if issues := validateHelpReport(h, schema.AnswerAuto); len(issues) != 0 {
+		t.Errorf("auto diagnosis with a hypothesis should pass, got %v", issues)
+	}
+}

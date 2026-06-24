@@ -68,6 +68,8 @@ func TestValidateReviewRequest(t *testing.T) {
 	}
 	wantInvalid(t, validateReviewRequest(schema.ReviewRequest{Verification: "paranoid"}), "bad verification")
 	wantInvalid(t, validateReviewRequest(schema.ReviewRequest{Policy: schema.ReviewPolicy{IncludePraise: true}}), "unsupported include_praise")
+	// A blocking cap is rejected: blockers are never demoted/dropped, so it is inert.
+	wantInvalid(t, validateReviewRequest(schema.ReviewRequest{Policy: schema.ReviewPolicy{MaxBlockingFindings: 3}}), "inert max_blocking_findings")
 	wantInvalid(t, validateReviewRequest(schema.ReviewRequest{Policy: schema.ReviewPolicy{MinimumEvidence: "guess"}}), "bad minimum_evidence")
 	// Conflicting target params: a commit set on a non-commit target.
 	wantInvalid(t, validateReviewRequest(schema.ReviewRequest{

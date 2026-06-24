@@ -130,11 +130,13 @@ func validateBudget(b schema.Budget) error {
 }
 
 func validateReviewPolicy(p schema.ReviewPolicy) error {
-	if p.MaxBlockingFindings < 0 {
-		return negative("policy.max_blocking_findings")
-	}
 	if p.MaxTotalFindings < 0 {
 		return negative("policy.max_total_findings")
+	}
+	// A blocker is never demoted or dropped to fit a count, so a blocking-findings
+	// cap would silently do nothing. Reject it rather than ignore it.
+	if p.MaxBlockingFindings != 0 {
+		return unsupported("policy.max_blocking_findings")
 	}
 	if p.IncludePraise {
 		return unsupported("policy.include_praise")

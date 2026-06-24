@@ -128,11 +128,13 @@ func (s *Session) generate(ctx context.Context, req provider.GenerationRequest) 
 	if err != nil {
 		// A context deadline/cancellation that interrupts the call should not look
 		// like a provider failure: a deadline is the run's own time budget, a
-		// cancellation is the caller aborting.
-		if ce := ctx.Err(); ce != nil {
-			if errors.Is(ce, context.DeadlineExceeded) {
-				return resp, schema.NewError(schema.CodeBudgetExhausted, "time budget exhausted during a model call")
-			}
+		// cancellation is the caller aborting. Classify on the error itself (which
+		// wraps the context cause) rather than on ctx.Err(), so a real provider
+		// error that merely races the deadline is not masked as a timeout.
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return resp, schema.NewError(schema.CodeBudgetExhausted, "time budget exhausted during a model call")
+		case errors.Is(err, context.Canceled):
 			return resp, schema.NewError(schema.CodeCancelled, "run cancelled")
 		}
 		return resp, err
@@ -164,6 +166,11 @@ func estimateRequestTokens(system string, msgs []provider.Message, tools []provi
 		chars += len(m.Content)
 		for _, tc := range m.ToolCalls {
 			chars += len(tc.Name) + len(tc.Arguments)
+		}
+		// Opaque provider items (e.g. Responses reasoning items) are replayed
+		// verbatim into the next request, so they count toward the context size.
+		for _, it := range m.ProviderItems {
+			chars += len(it)
 		}
 	}
 	for _, t := range tools {

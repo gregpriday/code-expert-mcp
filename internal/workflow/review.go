@@ -76,7 +76,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	reviewable := reviewableFiles(manifest, e.Cfg, req.Policy)
 	if len(reviewable) == 0 {
 		return e.assembleReview(ctx, runID, rs, riskMap, nil, nil, evid, tracker, usage,
-			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile, nil, req.Output.IncludeTrace), nil
+			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile, req.Policy, nil, req.Output.IncludeTrace), nil
 	}
 
 	// Enrich the manifest with enclosing changed symbols so the tool-less
@@ -108,7 +108,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 		progress("verification", "verifying candidates")
 		model, effort := e.routedSynthesisModel("review_verify", profile, complexity, highRisk)
 		verified := e.verifyCandidates(ctx, rs, deduped, evid, model, effort, tracker, usage)
-		survivors := applyGates(verified, snap, evid, changedRanges, deletedPaths(manifest), e.Cfg, req.Policy, &suppressed)
+		survivors := applyGates(verified, snap, evid, changedRanges, deletedBaseLines(ctx, rs), e.Cfg, req.Policy, &suppressed)
 
 		// Finalize (rank/phrase only survivors).
 		progress("synthesis", "finalizing findings")
@@ -126,7 +126,10 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 
 	// Verification: run the applicable checks in an isolated copy of the snapshot.
 	// off runs nothing; safe runs read-only analyzers; configured/deep run the
-	// project's checks. Executed checks are the only source of evidence level A.
+	// project's checks. Executed checks are the only thing that yields level-A
+	// (executed) evidence records. They run after candidate findings are finalized,
+	// so they corroborate the change set as a whole and surface as Checks/coverage
+	// rather than retroactively upgrading an already-published finding's level.
 	var checkResults []schema.CheckResult
 	if runner := checks.NewRunner(snap, e.Cfg.Checks, req.Verification, e.Log); runner.Enabled() {
 		progress("verification", "running checks (isolated)")
@@ -141,16 +144,17 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	}
 
 	progress("complete", "done")
-	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile, checkResults, req.Output.IncludeTrace), nil
+	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile, req.Policy, checkResults, req.Output.IncludeTrace), nil
 }
 
 // assembleReview builds the final ReviewResult, coverage, summary, and renders.
 func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.ReviewSnapshot, riskMap []schema.RiskArea,
 	findings []schema.ReviewFinding, suppressed *schema.SuppressionStats, evid *evidence.Store, tracker *budget.Tracker,
-	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile, checkResults []schema.CheckResult, includeTrace bool) schema.ReviewResult {
+	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile, policy schema.ReviewPolicy,
+	checkResults []schema.CheckResult, includeTrace bool) schema.ReviewResult {
 
 	manifest := rs.Manifest()
-	coverage := buildCoverage(manifest, e.Cfg, riskMap, findings)
+	coverage := buildCoverage(manifest, e.Cfg, policy, riskMap, findings)
 	for _, c := range checkResults {
 		coverage.ChecksRun = append(coverage.ChecksRun, c.Name)
 	}
@@ -241,15 +245,22 @@ func reviewableFiles(m *repo.ChangeManifest, cfg config.Config, policy schema.Re
 	return out
 }
 
-// deletedPaths returns the set of paths removed by the change set, so the
-// publication gates can attribute a finding to a deleted file (whose lines live
-// only in the base) instead of dropping it for failing head-existence checks.
-func deletedPaths(m *repo.ChangeManifest) map[string]bool {
-	out := map[string]bool{}
-	for _, f := range m.Files {
-		if f.Status == "D" {
-			out[f.Path] = true
+// deletedBaseLines maps each removed path to its base-version line count (-1 when
+// the base content is unreadable), so the publication gate can attribute a finding
+// to a deleted file (whose lines live only in the base) AND still reject a
+// hallucinated line number past the end of the removed file. Presence in the map
+// means "this path was deleted".
+func deletedBaseLines(ctx context.Context, rs *repo.ReviewSnapshot) map[string]int {
+	out := map[string]int{}
+	for _, f := range rs.Manifest().Files {
+		if f.Status != "D" {
+			continue
 		}
+		n := -1
+		if data, err := rs.ReadBase(ctx, f.Path); err == nil {
+			n = strings.Count(string(data), "\n") + 1
+		}
+		out[f.Path] = n
 	}
 	return out
 }
@@ -370,9 +381,11 @@ func riskRationale(cat schema.FindingCategory) string {
 // in policy) — deletions included, since their removed content is reviewed via
 // the frozen diff. Excluded files carry the policy reason. Coverage is derived
 // from what was demonstrably handled, not from mere manifest membership.
-func buildCoverage(m *repo.ChangeManifest, cfg config.Config, riskMap []schema.RiskArea, findings []schema.ReviewFinding) schema.ReviewCoverage {
+func buildCoverage(m *repo.ChangeManifest, cfg config.Config, policy schema.ReviewPolicy, riskMap []schema.RiskArea, findings []schema.ReviewFinding) schema.ReviewCoverage {
 	cov := schema.ReviewCoverage{}
-	includeGen := cfg.Review.IncludeGenerated
+	// Honor the same include-generated decision reviewableFiles made, so a file
+	// reviewed under policy.include_generated is not reported as excluded.
+	includeGen := cfg.Review.IncludeGenerated || policy.IncludeGenerated
 	add := func(f repo.ChangedFile, state schema.CoverageState, reason string) {
 		cov.Files = append(cov.Files, schema.FileCoverage{Path: f.Path, Status: f.Status, State: state, Reason: reason})
 	}

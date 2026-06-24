@@ -31,9 +31,10 @@ plan/help/review logic, extend that fake's `Generate` rather than calling a live
   no shell strings). Verification checks (`internal/checks`) run in a throwaway copy of the
   frozen snapshot with isolated cache/home/temp dirs, never in the protected tree. The
   release-blocking test is `TestNoWriteInvariant` in `internal/workflow`.
-- **Immutable snapshots.** Every working-tree read is verified against the bytes frozen at
-  snapshot time; a mid-run edit yields a typed `CE_SNAPSHOT_CHANGED` / `stale` status, never a
-  silent mix of pre- and post-edit state.
+- **Immutable snapshots.** Each working-tree read is verified against what was frozen at
+  snapshot time — byte-for-byte for content-hashed files, by size+modtime for oversized files —
+  so a mid-run edit yields a typed `CE_SNAPSHOT_CHANGED` / `stale` status instead of a silent mix
+  of pre- and post-edit state.
 - **Truthful results.** Request fields the runtime does not honor are rejected, not ignored;
   per-request limits clamp DOWN only; `complete` means complete (unresolved validation, budget
   exhaustion, or a stale snapshot downgrade the status).

@@ -44,4 +44,13 @@ func TestSyntheticAddDiff(t *testing.T) {
 	if d, r, n := syntheticAddDiff("empty", nil); d != "" || r != nil || n != 0 {
 		t.Errorf("empty content should produce no diff, got (%q,%v,%d)", d, r, n)
 	}
+	// Interior and trailing blank lines are preserved, not collapsed.
+	if _, _, n := syntheticAddDiff("f", []byte("a\n\nb\n\n")); n != 4 {
+		t.Errorf("trailing/interior blanks: line count = %d, want 4", n)
+	}
+	// A file with no trailing newline keeps its last line and gets the git marker.
+	d, _, n := syntheticAddDiff("f", []byte("a\nb"))
+	if n != 2 || !strings.Contains(d, "No newline at end of file") {
+		t.Errorf("no-final-newline: n=%d diff=%q", n, d)
+	}
 }

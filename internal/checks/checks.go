@@ -1,10 +1,20 @@
-// Package checks runs pre-approved verification commands in an ISOLATED copy of
-// the frozen repository, never inside the protected working tree or .git. This is
-// what lets a review "execute" a check (earning evidence level A) without
-// violating the read-only invariant: builds and test suites write caches and
-// artifacts, so they run against a throwaway materialization with isolated cache,
-// home, and temp directories. Commands are argv arrays from trusted configuration
-// — there is no shell, and the executable must be a bare PATH command.
+// Package checks runs pre-approved verification commands against an ISOLATED copy
+// of the frozen repository, never with the working directory set to the protected
+// tree or .git. This is what lets a review "execute" a check (earning evidence
+// level A) without CodeExpert itself writing in the repository: builds and test
+// suites write caches and artifacts, so they run in a throwaway materialization
+// with the working directory and the cache/home/temp environment redirected into
+// it. Commands are argv arrays from trusted configuration — there is no shell, and
+// the executable must be a bare PATH command, so a binary inside the repo cannot
+// be invoked.
+//
+// Trust boundary: the source is COPIED (not mounted), so a command's relative
+// writes land in the throwaway tree, not the repository. CodeExpert does not, and
+// without OS-level sandboxing cannot, prevent a command the operator configured
+// from writing elsewhere via an absolute path — that is the operator's trust
+// decision when they add a command to the allowlist. The release-blocking
+// TestNoWriteInvariant covers CodeExpert's own behavior; this package never sets a
+// command's working directory to the protected tree.
 package checks
 
 import (
@@ -100,10 +110,13 @@ func (r *Runner) Run(ctx context.Context, maxTotal time.Duration) ([]schema.Chec
 		evid    []schema.EvidenceRecord
 	)
 	for _, c := range cmds {
-		if time.Now().After(overall) || ctx.Err() != nil {
+		remaining := time.Until(overall)
+		if remaining <= 0 || ctx.Err() != nil {
 			break
 		}
-		res, err := runOne(ctx, dir, env, c)
+		// Bound each command by the smaller of its own timeout and the remaining
+		// overall budget, so a single long check cannot run past maxTotal.
+		res, err := runOne(ctx, dir, env, c, remaining)
 		if err != nil {
 			r.log.Warn("check skipped", "name", c.Name, "err", err.Error())
 			continue
@@ -149,8 +162,9 @@ func (r *Runner) materialize(ctx context.Context) (string, func(), error) {
 	return dir, cleanup, nil
 }
 
-// runOne executes a single pre-approved command in the materialized tree.
-func runOne(ctx context.Context, dir string, env []string, c config.CheckCommand) (schema.CheckResult, error) {
+// runOne executes a single pre-approved command in the materialized tree, bounded
+// by the smaller of its own timeout and the supplied remaining overall budget.
+func runOne(ctx context.Context, dir string, env []string, c config.CheckCommand, budget time.Duration) (schema.CheckResult, error) {
 	if len(c.Argv) == 0 {
 		return schema.CheckResult{}, fmt.Errorf("empty argv")
 	}
@@ -163,13 +177,25 @@ func runOne(ctx context.Context, dir string, env []string, c config.CheckCommand
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
+	if budget > 0 && budget < timeout {
+		timeout = budget
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cwd := dir
 	if c.Cwd != "" {
 		cwd = filepath.Join(dir, filepath.FromSlash(c.Cwd))
-		if !withinDir(dir, cwd) {
+		// Resolve symlinks at use time before the containment check, so a symlink
+		// planted inside the tree cannot redirect the working directory out of it.
+		if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+			cwd = resolved
+		}
+		rootResolved := dir
+		if rr, err := filepath.EvalSymlinks(dir); err == nil {
+			rootResolved = rr
+		}
+		if !withinDir(rootResolved, cwd) {
 			return schema.CheckResult{}, fmt.Errorf("check %q: cwd escapes the materialized tree", c.Name)
 		}
 	}

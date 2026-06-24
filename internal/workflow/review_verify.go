@@ -223,7 +223,7 @@ func (e *Engine) verifyCandidates(ctx context.Context, rs *repo.ReviewSnapshot, 
 // applyGates enforces the deterministic publication gates and policy limits,
 // recording suppression reasons.
 func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidence.Store, changed map[string][]repo.LineRange,
-	deleted map[string]bool, cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
+	deleted map[string]int, cfg config.Config, policy schema.ReviewPolicy, stats *schema.SuppressionStats) []verifiedCandidate {
 
 	val := evidence.NewValidator(snap)
 	minLevel := minEvidenceLevel(cfg, policy)
@@ -245,11 +245,22 @@ func applyGates(verified []verifiedCandidate, snap *repo.Snapshot, evid *evidenc
 		}
 		// A finding attributed to a deleted file cannot be validated against the
 		// head (the file is gone) or against changed head ranges (there are none).
-		// Its lines live only in the base, so accept it on path identity alone —
-		// it is a finding about removed content, which is exactly what we want to
-		// surface — and skip the head-oriented location and attribution gates.
-		isDeletion := deleted[vc.cand.Location.Path]
-		if !isDeletion {
+		// Its lines live only in the base, so accept it on path identity — it is a
+		// finding about removed content — but still reject a malformed range or a
+		// line past the end of the removed file (a hallucinated location), so a
+		// deletion finding cannot publish a bogus location.
+		baseLines, isDeletion := deleted[vc.cand.Location.Path]
+		if isDeletion {
+			loc := vc.cand.Location
+			if loc.StartLine < 0 || (loc.EndLine > 0 && loc.EndLine < loc.StartLine) {
+				suppress("invalid_location")
+				continue
+			}
+			if baseLines > 0 && (loc.StartLine > baseLines+1 || loc.EndLine > baseLines+1) {
+				suppress("invalid_location")
+				continue
+			}
+		} else {
 			if !val.FileExists(vc.cand.Location.Path) {
 				suppress("invalid_location")
 				continue

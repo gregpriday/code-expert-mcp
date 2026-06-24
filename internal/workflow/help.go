@@ -227,7 +227,11 @@ func validateHelpReport(help *schema.HelpReport, answerType schema.HelpAnswerTyp
 	if strings.TrimSpace(help.DirectAnswer) == "" {
 		issues = append(issues, "direct_answer is empty; a help answer must lead with a concrete direct answer")
 	}
-	if answerType == schema.AnswerDiagnose && len(help.LikelyCauses) == 0 {
+	// Require ranked hypotheses whenever this is a diagnosis — whether the caller
+	// asked for one or the model decided (under answer_type=auto) to produce one.
+	// Checking only the requested type would let an auto run claim a diagnosis with
+	// no hypotheses and still pass.
+	if (answerType == schema.AnswerDiagnose || help.AnswerType == schema.AnswerDiagnose) && len(help.LikelyCauses) == 0 {
 		issues = append(issues, "a diagnosis requires at least one ranked hypothesis in likely_causes")
 	}
 	return issues
