@@ -67,7 +67,7 @@ type Expectation struct {
 
 	// Review expectations.
 	MinFindings        int      `json:"min_findings,omitempty"`
-	MaxFindings        int      `json:"max_findings,omitempty"` // -1 disables; 0 means exactly-zero is allowed
+	MaxFindings        int      `json:"max_findings,omitempty"` // 0 or -1 disables the cap
 	ExpectFindingPaths []string `json:"expect_finding_paths,omitempty"`
 	ForbidApprovalLang bool     `json:"forbid_approval_language,omitempty"`
 }

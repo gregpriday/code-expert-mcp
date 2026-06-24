@@ -1,5 +1,6 @@
 // Package cli implements the command-line interface. Commands map to the same
-// engine the MCP server uses; `help` is codeexpert_plan with mode="help".
+// engine the MCP server uses: `plan` is codeexpert_plan, `help` is
+// codeexpert_help, and `review` is codeexpert_review.
 package cli
 
 import (
