@@ -112,6 +112,25 @@ func buildSnapshotForTest(t *testing.T, cfg config.Config, files map[string]stri
 	return snap
 }
 
+func TestListFilesReturnsCopy(t *testing.T) {
+	snap := buildSnapshotForTest(t, config.Defaults(), map[string]string{
+		"a.go": "package a\n", "b.go": "package b\n", "c.go": "package c\n",
+	})
+	first := snap.ListFiles()
+	if len(first) < 2 {
+		t.Fatalf("expected multiple files, got %d", len(first))
+	}
+	// Mutating the returned slice must not affect the snapshot's internal order,
+	// which the trigram index relies on (file IDs are indices into ListFiles).
+	first[0], first[len(first)-1] = first[len(first)-1], first[0]
+	second := snap.ListFiles()
+	for i := range second {
+		if second[i].Path != snap.files[i].Path {
+			t.Fatalf("ListFiles must return a copy; index %d diverged after caller mutation", i)
+		}
+	}
+}
+
 func TestReadFileBuildsOffsets(t *testing.T) {
 	content := "package main\nfunc main() {}\n"
 	snap := buildSnapshotForTest(t, config.Defaults(), map[string]string{"main.go": content})

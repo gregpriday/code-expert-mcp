@@ -272,6 +272,27 @@ func TestLexicalSearchDetailedTruncation(t *testing.T) {
 	}
 }
 
+func TestSearchPerFileCapTruncated(t *testing.T) {
+	// A single file with more matches than the per-file cap (20) must report
+	// Truncated, not imply completeness.
+	content := "package p\n"
+	for i := 0; i < 30; i++ {
+		content += "var needle = 1\n"
+	}
+	snap := buildSnapshot(t, map[string]string{"f.go": content})
+	e := NewLexicalEngine(snap, 100)
+	res, err := e.SearchDetailed(context.Background(), SearchQuery{Pattern: "needle", Mode: ModeLiteral, MaxResults: 100})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Hits) != 20 {
+		t.Errorf("expected 20 hits (per-file cap), got %d", len(res.Hits))
+	}
+	if !res.Truncated {
+		t.Error("expected Truncated=true when a file hits the per-file cap")
+	}
+}
+
 func TestSearchPathsRanking(t *testing.T) {
 	files := map[string]string{
 		"cache.go":         "package p\n", // basename prefix match (strong)

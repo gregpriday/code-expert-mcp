@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -60,7 +61,14 @@ func (s *Snapshot) Branch() string  { return s.branch }
 func (s *Snapshot) Dirty() bool     { return s.dirty }
 
 // ListFiles returns the frozen inventory.
-func (s *Snapshot) ListFiles() []FileMeta { return s.files }
+// ListFiles returns a copy of the frozen file inventory. It is a copy so callers
+// cannot mutate the snapshot's internal ordering — the trigram index relies on it
+// (candidate file IDs are indices into this slice, stable across calls).
+func (s *Snapshot) ListFiles() []FileMeta {
+	out := make([]FileMeta, len(s.files))
+	copy(out, s.files)
+	return out
+}
 
 // Stat returns the metadata for a repo-relative path.
 func (s *Snapshot) Stat(path string) (FileMeta, bool) {
@@ -307,7 +315,14 @@ func readLimited(path string, limit int64) ([]byte, error) {
 			total += int64(n)
 		}
 		if rerr != nil {
-			break
+			if rerr == io.EOF {
+				break
+			}
+			// Propagate genuine read failures instead of silently returning a
+			// truncated buffer: a partial read must surface as an error so callers
+			// (e.g. the trigram index build) treat the file conservatively rather
+			// than indexing incomplete content.
+			return nil, rerr
 		}
 	}
 	return buf, nil

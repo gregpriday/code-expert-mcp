@@ -53,6 +53,36 @@ func TestMarkdownHeadingRanking(t *testing.T) {
 	}
 }
 
+func TestMarkdownHitOnHeadingLineGetsOwnSection(t *testing.T) {
+	// A hit that lands on a heading line must be attributed to that heading, not
+	// its parent section.
+	md := "# Guide\n\n## Caching\n\nbody text\n"
+	snap := buildSnapshot(t, map[string]string{"g.md": md})
+	e := NewLexicalEngine(snap, 100)
+	res, err := e.SearchDetailed(context.Background(), SearchQuery{Pattern: "Caching", Mode: ModeLiteral})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Hits) != 1 || res.Hits[0].Section != "Caching" {
+		t.Fatalf("hit on '## Caching' should have Section 'Caching', got %+v", res.Hits)
+	}
+}
+
+func TestMarkdownIndentedFenceIsNotAFence(t *testing.T) {
+	// A 4-space-indented fence marker is indented code, not a fence; it must not
+	// open a stale block that swallows the following heading.
+	md := "# A\n\n    ```\n\n## B\n\nneedle here\n"
+	snap := buildSnapshot(t, map[string]string{"d.md": md})
+	e := NewLexicalEngine(snap, 100)
+	res, err := e.SearchDetailed(context.Background(), SearchQuery{Pattern: "needle", Mode: ModeLiteral})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Hits) != 1 || res.Hits[0].Section != "B" {
+		t.Fatalf("indented ``` must not open a fence; want Section 'B', got %+v", res.Hits)
+	}
+}
+
 func TestMarkdownFenceTracking(t *testing.T) {
 	// A '#' comment inside a fenced code block must NOT become a section, even when
 	// a mismatched inner fence (~~~ inside a ```-block) appears.

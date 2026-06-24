@@ -40,4 +40,23 @@ func TestNormalizeToUTF8(t *testing.T) {
 	if got := normalizeToUTF8([]byte{'a', 0xF1, 'o'}); !bytes.Contains(got, []byte("ñ")) {
 		t.Errorf("0xF1 should decode to ñ, got %q", got)
 	}
+
+	// A mostly-UTF-8 file with one stray legacy byte must keep its valid UTF-8
+	// runs intact and only remap the stray byte (not transcode the whole file).
+	mixed := []byte("café ")    // valid UTF-8 (é = c3 a9)
+	mixed = append(mixed, 0x92) // a stray Windows-1252 right single quote
+	mixed = append(mixed, []byte(" déjà vu")...)
+	gotMixed := normalizeToUTF8(mixed)
+	if !utf8.Valid(gotMixed) {
+		t.Fatalf("mixed result must be valid UTF-8, got %x", gotMixed)
+	}
+	for _, want := range []string{"café", "déjà", "’"} {
+		if !bytes.Contains(gotMixed, []byte(want)) {
+			t.Errorf("mixed decode lost or corrupted %q: got %q", want, gotMixed)
+		}
+	}
+	// The valid multibyte runes must not have been re-decoded into mojibake.
+	if bytes.Contains(gotMixed, []byte("Ã©")) || bytes.Contains(gotMixed, []byte("Ã ")) {
+		t.Errorf("mixed decode corrupted valid UTF-8 into Windows-1252 mojibake: %q", gotMixed)
+	}
 }

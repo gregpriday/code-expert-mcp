@@ -62,7 +62,7 @@ type SearchHit struct {
 type SearchResult struct {
 	Hits         []SearchHit
 	FilesMatched int  // distinct files with at least one match (before the limit)
-	Truncated    bool // some matches were dropped to honor the result limit
+	Truncated    bool // some matches may be omitted (result limit or per-file cap)
 }
 
 // LexicalEngine searches a snapshot's text files.
@@ -187,6 +187,7 @@ func (e *LexicalEngine) SearchDetailed(ctx context.Context, q SearchQuery) (Sear
 	}
 	var matches []fileMatch
 	totalHits := 0
+	perFileCapped := false
 	visit := func(fm repo.FileMeta) error {
 		if err := ctx.Err(); err != nil {
 			return schema.NewError(schema.CodeCancelled, "search cancelled")
@@ -204,6 +205,11 @@ func (e *LexicalEngine) SearchDetailed(ctx context.Context, q SearchQuery) (Sear
 		fileHits := searchFile(fc, re, ctxLines, e.maxPerFile)
 		if len(fileHits) == 0 {
 			return nil
+		}
+		if len(fileHits) == e.maxPerFile {
+			// The per-file cap was reached; this file may have more matches than
+			// reported, so surface truncation rather than implying completeness.
+			perFileCapped = true
 		}
 		annotateSections(fm, fc, fileHits)
 		totalHits += len(fileHits)
@@ -256,7 +262,7 @@ func (e *LexicalEngine) SearchDetailed(ctx context.Context, q SearchQuery) (Sear
 	return SearchResult{
 		Hits:         hits,
 		FilesMatched: len(matches),
-		Truncated:    len(hits) < totalHits || emittedFiles < len(matches),
+		Truncated:    perFileCapped || len(hits) < totalHits || emittedFiles < len(matches),
 	}, nil
 }
 
@@ -509,18 +515,27 @@ func annotateSections(fm repo.FileMeta, fc repo.FileContent, hits []SearchHit) {
 	prevWasText := false
 	for i := 0; i < len(offsets); i++ {
 		raw := lineAt(fc.Bytes, offsets, i)
-		trimmed := strings.TrimSpace(string(raw))
-		if ch, n, rest, ok := fenceMarker(trimmed); ok {
-			switch {
-			case !inFence:
-				inFence, fenceChar, fenceLen = true, ch, n
-			case ch == fenceChar && n >= fenceLen && rest == "":
-				// A closing fence must use the same character, be at least as long,
-				// and carry no info string; a mismatched inner fence is content.
-				inFence = false
+		s := string(raw)
+		indent := 0
+		for indent < len(s) && s[indent] == ' ' {
+			indent++
+		}
+		trimmed := strings.TrimSpace(s)
+		// Fences are recognized only with fewer than 4 spaces of indent (4+ spaces
+		// is an indented code block, not a fence).
+		if indent < 4 {
+			if ch, n, rest, ok := fenceMarker(trimmed); ok {
+				switch {
+				case !inFence:
+					inFence, fenceChar, fenceLen = true, ch, n
+				case ch == fenceChar && n >= fenceLen && rest == "":
+					// A closing fence must use the same character, be at least as long,
+					// and carry no info string; a mismatched inner fence is content.
+					inFence = false
+				}
+				prevWasText = false
+				continue
 			}
-			prevWasText = false
-			continue
 		}
 		if inFence {
 			prevWasText = false
@@ -549,8 +564,9 @@ func annotateSections(fm repo.FileMeta, fc repo.FileContent, hits []SearchHit) {
 	}
 	sort.Slice(headings, func(i, j int) bool { return headings[i].line < headings[j].line })
 	for hi := range hits {
-		// The nearest heading strictly above the hit's line.
-		idx := sort.Search(len(headings), func(k int) bool { return headings[k].line >= hits[hi].Line })
+		// The enclosing heading: the last one at or above the hit's line, so a hit
+		// on a heading line gets that heading rather than its parent.
+		idx := sort.Search(len(headings), func(k int) bool { return headings[k].line > hits[hi].Line })
 		if idx > 0 {
 			hits[hi].Section = headings[idx-1].text
 		}

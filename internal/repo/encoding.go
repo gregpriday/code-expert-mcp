@@ -9,9 +9,13 @@ import (
 // trigram index all operate on one consistent byte space across any source
 // language. Valid UTF-8 (the overwhelming common case) and empty input are
 // returned unchanged, so nearly every file is byte-identical and behaviour is
-// unaffected. A UTF-8 BOM is stripped. Anything else is decoded as Windows-1252
-// (a superset of Latin-1), which deterministically recovers legacy single-byte
-// text — common in older PHP, JS, and CSS — without any external dependency.
+// unaffected. A UTF-8 BOM is stripped.
+//
+// For input that is not wholly valid UTF-8 it decodes byte by byte, preserving
+// valid UTF-8 sequences verbatim and mapping only the invalid bytes through
+// Windows-1252 (a superset of Latin-1). This recovers legacy single-byte text —
+// common in older PHP, JS, and CSS — without corrupting a mostly-UTF-8 file that
+// merely contains a stray byte, and without any external dependency.
 //
 // Binary files are detected and skipped upstream, so this only ever sees text;
 // UTF-16 sources carry interleaved NUL bytes and are treated as binary there.
@@ -25,7 +29,7 @@ func normalizeToUTF8(data []byte) []byte {
 	if utf8.Valid(data) {
 		return data
 	}
-	return decodeWindows1252(data)
+	return decodeMixed(data)
 }
 
 // win1252High maps the 0x80–0x9F bytes that Windows-1252 assigns to printable
@@ -41,24 +45,35 @@ var win1252High = map[byte]rune{
 	0x9C: 'œ', 0x9E: 'ž', 0x9F: 'Ÿ',
 }
 
-func decodeWindows1252(data []byte) []byte {
+// decodeMixed walks data, copying valid UTF-8 sequences verbatim and mapping each
+// invalid byte through Windows-1252. This keeps already-valid UTF-8 runs intact
+// even when a few stray legacy bytes are interspersed.
+func decodeMixed(data []byte) []byte {
 	var b strings.Builder
 	b.Grow(len(data) + len(data)/8)
 	var buf [4]byte
-	for _, c := range data {
-		var r rune
-		switch {
-		case c < 0x80:
+	for i := 0; i < len(data); {
+		c := data[i]
+		if c < 0x80 {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if r, size := utf8.DecodeRune(data[i:]); !(r == utf8.RuneError && size == 1) {
+			// A valid multibyte UTF-8 sequence (including a genuine U+FFFD): copy it.
+			b.Write(data[i : i+size])
+			i += size
+			continue
+		}
+		// An invalid byte: map it through Windows-1252 (0xA0–0xFF and undefined
+		// slots fall back to their Latin-1 code point).
+		r, ok := win1252High[c]
+		if !ok {
 			r = rune(c)
-		default:
-			if mapped, ok := win1252High[c]; ok {
-				r = mapped
-			} else {
-				r = rune(c) // 0xA0–0xFF Latin-1, plus undefined slots
-			}
 		}
 		n := utf8.EncodeRune(buf[:], r)
 		b.Write(buf[:n])
+		i++
 	}
 	return []byte(b.String())
 }
