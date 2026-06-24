@@ -162,6 +162,9 @@ func writeReviewFinding(b *strings.Builder, f schema.ReviewFinding) {
 	if f.Blocking {
 		meta += " · blocking"
 	}
+	if f.Verification.Status != "" {
+		meta += " · " + string(f.Verification.Status)
+	}
 	if loc := formatLocation(f.Location.Path, f.Location.StartLine, f.Location.EndLine); loc != "" {
 		meta += " · " + loc
 	}

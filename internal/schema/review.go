@@ -28,12 +28,42 @@ type SourceLocation struct {
 	Symbol    string `json:"symbol,omitempty"`
 }
 
-// VerificationInfo records how a finding was checked.
+// VerificationInfo records how a finding was checked. Confirmed is reserved for
+// findings reproduced by an executed check; Status is the honest confirmation
+// vocabulary for everything else, so a model-only judgment is never presented as
+// "confirmed".
 type VerificationInfo struct {
-	Method    string `json:"method"`
-	Confirmed bool   `json:"confirmed"`
-	CheckID   string `json:"check_id,omitempty"`
-	Detail    string `json:"detail,omitempty"`
+	Method    string             `json:"method"`
+	Status    ConfirmationStatus `json:"status"`
+	Confirmed bool               `json:"confirmed"`
+	CheckID   string             `json:"check_id,omitempty"`
+	Detail    string             `json:"detail,omitempty"`
+}
+
+// ConfirmationStatus is the honest strength of a finding's confirmation, derived
+// deterministically from its (capped) evidence level.
+type ConfirmationStatus string
+
+const (
+	ConfirmedByExecution ConfirmationStatus = "confirmed_by_execution" // a check reproduced it (evidence A)
+	CorroboratedByCode   ConfirmationStatus = "corroborated_by_code"   // independent caller/def/test/analyzer (B)
+	PlausibleCodePath    ConfirmationStatus = "plausible_code_path"    // a concrete code path supports it (C)
+	Unconfirmed          ConfirmationStatus = "unconfirmed"            // model judgment only, material assumptions (D)
+)
+
+// ConfirmationFromEvidence maps a capped evidence level to its honest
+// confirmation status.
+func ConfirmationFromEvidence(level EvidenceLevel) ConfirmationStatus {
+	switch level {
+	case EvidenceExecutable:
+		return ConfirmedByExecution
+	case EvidenceTool:
+		return CorroboratedByCode
+	case EvidenceCodePath:
+		return PlausibleCodePath
+	default:
+		return Unconfirmed
+	}
 }
 
 // ReviewSummary is the high-level review outcome.

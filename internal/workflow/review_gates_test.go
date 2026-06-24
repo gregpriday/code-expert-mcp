@@ -121,35 +121,49 @@ func TestApplyGatesSuppressionReasons(t *testing.T) {
 	}
 }
 
-// TestApplyGatesBlockingCapDemotes confirms blocking findings beyond the cap are
-// demoted (not dropped), and the total cap drops the overflow with a reason.
-func TestApplyGatesBlockingCapDemotes(t *testing.T) {
+// TestApplyGatesNeverDemotesBlockers proves the total cap drops only the lowest
+// priority NON-blocking overflow and never demotes or drops a genuine blocker,
+// even past the configured total (hiding a blocker to fit a count is the most
+// dangerous thing a review can do).
+func TestApplyGatesNeverDemotesBlockers(t *testing.T) {
 	snap, rel := testSnapshot(t)
 	cfg := config.Defaults()
 	changed := map[string][]repo.LineRange{rel: {{Start: 1, End: 5}}}
 	evid := evidence.NewStore(snap.ID())
-	stats := &schema.SuppressionStats{ByReason: map[string]int{}}
 
+	// 3 blocking + 2 non-blocking, total cap 3 -> all 3 blockers survive blocking,
+	// both non-blocking overflow dropped.
 	var in []verifiedCandidate
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 3; i++ {
 		in = append(in, mkVerified(mkCandidate(rel, 1+i, 1+i, schema.CategoryCorrectness, "fix it"), true, schema.EvidenceCodePath, true))
 	}
-	policy := schema.ReviewPolicy{MaxBlockingFindings: 2, MaxTotalFindings: 3}
-	survivors := applyGates(in, snap, evid, changed, nil, cfg, policy, stats)
-	if len(survivors) != 3 {
-		t.Fatalf("expected 3 survivors after total cap, got %d", len(survivors))
+	for i := 0; i < 2; i++ {
+		in = append(in, mkVerified(mkCandidate(rel, 1+i, 1+i, schema.CategorySecurity, "fix it too"), true, schema.EvidenceCodePath, false))
 	}
+	stats := &schema.SuppressionStats{ByReason: map[string]int{}}
+	survivors := applyGates(in, snap, evid, changed, nil, cfg, schema.ReviewPolicy{MaxTotalFindings: 3}, stats)
 	blocking := 0
 	for _, s := range survivors {
 		if s.v.Blocking {
 			blocking++
 		}
 	}
-	if blocking != 2 {
-		t.Errorf("expected 2 blocking after demotion, got %d", blocking)
+	if blocking != 3 {
+		t.Errorf("all 3 blockers must survive AS blocking, got %d blocking of %d survivors", blocking, len(survivors))
 	}
-	if stats.ByReason["over_total_limit"] != 1 {
-		t.Errorf("expected 1 over_total_limit suppression, got %+v", stats.ByReason)
+	if stats.ByReason["over_total_limit"] != 2 {
+		t.Errorf("expected 2 non-blocking dropped by the total cap, got %+v", stats.ByReason)
+	}
+
+	// 4 blockers, cap 3 -> all 4 still survive; a blocker is never dropped to fit.
+	var allBlock []verifiedCandidate
+	for i := 0; i < 4; i++ {
+		allBlock = append(allBlock, mkVerified(mkCandidate(rel, 1+i, 1+i, schema.CategoryCorrectness, "fix it"), true, schema.EvidenceCodePath, true))
+	}
+	stats = &schema.SuppressionStats{ByReason: map[string]int{}}
+	survivors = applyGates(allBlock, snap, evid, changed, nil, cfg, schema.ReviewPolicy{MaxTotalFindings: 3}, stats)
+	if len(survivors) != 4 {
+		t.Errorf("4 blockers must all publish past a total cap of 3, got %d", len(survivors))
 	}
 }
 
@@ -265,24 +279,32 @@ func TestWithinChange(t *testing.T) {
 	}
 }
 
+// TestDedupeCandidates proves the content fingerprint merges the SAME defect even
+// when reported far apart, and keeps DISTINCT defects on the same line separate —
+// the opposite of the old line-bucket key.
 func TestDedupeCandidates(t *testing.T) {
-	in := []candidateFinding{
-		mkCandidate("a.go", 1, 1, schema.CategoryCorrectness, "fix", "E1"),
-		mkCandidate("a.go", 2, 2, schema.CategoryCorrectness, "fix", "E2"), // same path/bucket/category -> merge
-		mkCandidate("a.go", 5, 5, schema.CategoryCorrectness, "fix", "E3"), // line 5 -> different bucket
-		{Title: "", Claim: ""}, // empty -> skipped
-	}
-	in[1].Severity = schema.SeverityCritical // higher severity should win on merge
-	out := dedupeCandidates(in)
+	// Identical trigger/claim reported 39 lines apart -> one defect, merged.
+	a1 := mkCandidate("a.go", 1, 1, schema.CategoryCorrectness, "fix", "E1")
+	a2 := mkCandidate("a.go", 40, 40, schema.CategoryCorrectness, "fix", "E2")
+	a2.Severity = schema.SeverityCritical // higher severity should win on merge
+	// A genuinely different defect on the same line as a1 -> kept separate.
+	b := mkCandidate("a.go", 1, 1, schema.CategoryCorrectness, "fix", "E3")
+	b.Trigger = "an entirely different trigger condition"
+	b.Claim = "a different claim about unrelated behavior"
+
+	out := dedupeCandidates([]candidateFinding{a1, a2, b, {Title: "", Claim: ""}})
 	if len(out) != 2 {
-		t.Fatalf("expected 2 deduped candidates, got %d", len(out))
+		t.Fatalf("expected 2 deduped (identical merged across lines, distinct kept), got %d", len(out))
 	}
-	merged := out[0]
+	merged := out[0] // a1 with a2 merged in
 	if merged.Severity != schema.SeverityCritical {
 		t.Errorf("merge should take the higher severity, got %s", merged.Severity)
 	}
 	if len(merged.EvidenceIDs) != 2 {
 		t.Errorf("merge should union evidence ids, got %v", merged.EvidenceIDs)
+	}
+	if len(out[1].EvidenceIDs) != 1 || out[1].EvidenceIDs[0] != "E3" {
+		t.Errorf("distinct defect should stay separate with its own evidence, got %+v", out[1].EvidenceIDs)
 	}
 }
 
