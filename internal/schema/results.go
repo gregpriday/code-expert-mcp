@@ -56,13 +56,20 @@ type ReviewSnapshot struct {
 	HeadLabel  string `json:"head_label,omitempty"`
 }
 
-// InterpretedTask is the normalized understanding of the request.
+// InterpretedTask is the normalized understanding of the request. It carries the
+// full task contract forward (id, title, known facts, prior plan) so nothing the
+// caller supplied is silently discarded before synthesis.
 type InterpretedTask struct {
 	Goal               string   `json:"goal"`
 	Mode               PlanMode `json:"mode"`
+	TaskID             string   `json:"task_id,omitempty"`
+	Title              string   `json:"title,omitempty"`
 	Constraints        []string `json:"constraints,omitempty"`
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	NonGoals           []string `json:"non_goals,omitempty"`
+	KnownFacts         []string `json:"known_facts,omitempty"`
+	PriorPlan          string   `json:"prior_plan,omitempty"`
+	AnswerType         string   `json:"answer_type,omitempty"`
 	SearchAnchors      []string `json:"search_anchors,omitempty"`
 	ExplicitPaths      []string `json:"explicit_paths,omitempty"`
 }

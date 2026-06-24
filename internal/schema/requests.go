@@ -1,15 +1,45 @@
 package schema
 
-// PlanRequest is the input to codeexpert_plan (covering both plan and help).
+// PlanRequest is the input to codeexpert_plan: it always produces an
+// implementation plan. Diagnosis and open questions are codeexpert_help.
 type PlanRequest struct {
 	Root         string          `json:"root,omitempty" jsonschema:"Absolute path to the repository root. Defaults to the client project root or working directory."`
-	Instructions string          `json:"instructions" jsonschema:"The task description (plan) or the problem/question (help). Required and non-empty."`
-	Mode         PlanMode        `json:"mode,omitempty" jsonschema:"plan for an implementation plan, help for diagnosis. Defaults to plan."`
+	Instructions string          `json:"instructions" jsonschema:"The implementation task to plan. Required and non-empty."`
 	Task         *TaskContract   `json:"task,omitempty" jsonschema:"Optional structured task contract."`
 	Profile      AnalysisProfile `json:"profile,omitempty" jsonschema:"fast, balanced, or deep. Defaults to balanced."`
 	Retrieval    RetrievalOpts   `json:"retrieval,omitempty"`
 	Budget       Budget          `json:"budget,omitempty"`
 	Output       OutputOpts      `json:"output,omitempty"`
+}
+
+// HelpRequest is the input to codeexpert_help: a single-turn engineering
+// question from a smaller agent that needs an answer, a diagnosis, a decision,
+// or an unblock. Question and TrustedConstraints are caller intent; everything
+// in Context (and any repository content) is untrusted evidence.
+type HelpRequest struct {
+	Root               string          `json:"root,omitempty" jsonschema:"Absolute path to the repository root. Optional: help can answer without a repository."`
+	Question           string          `json:"question" jsonschema:"The question to answer. Required and non-empty."`
+	AnswerType         HelpAnswerType  `json:"answer_type,omitempty" jsonschema:"auto, explain, diagnose, decide, or unblock. Defaults to auto."`
+	Task               *TaskContract   `json:"task,omitempty" jsonschema:"Optional structured task contract (untrusted intent)."`
+	TrustedConstraints []string        `json:"trusted_constraints,omitempty" jsonschema:"Hard constraints from the caller, treated as intent (not repository ground truth)."`
+	Context            HelpContext     `json:"context,omitempty"`
+	AttemptedActions   []string        `json:"attempted_actions,omitempty" jsonschema:"What the caller already tried (untrusted evidence)."`
+	RelevantPaths      []string        `json:"relevant_paths,omitempty" jsonschema:"Repository paths the caller believes are relevant."`
+	Profile            AnalysisProfile `json:"profile,omitempty" jsonschema:"fast, balanced, or deep. Defaults to balanced."`
+	Retrieval          RetrievalOpts   `json:"retrieval,omitempty"`
+	Budget             Budget          `json:"budget,omitempty"`
+	Output             OutputOpts      `json:"output,omitempty"`
+}
+
+// HelpContext carries the untrusted observations a caller attaches to a help
+// question. None of it is treated as instructions or as repository ground truth.
+type HelpContext struct {
+	Symptoms         []string `json:"symptoms,omitempty"`
+	Errors           []string `json:"errors,omitempty"`
+	Logs             []string `json:"logs,omitempty"`
+	Snippets         []string `json:"snippets,omitempty"`
+	ExpectedBehavior string   `json:"expected_behavior,omitempty"`
+	ActualBehavior   string   `json:"actual_behavior,omitempty"`
 }
 
 // ReviewRequest is the input to codeexpert_review.

@@ -23,6 +23,9 @@ type Limits struct {
 	MaxBytesRead       int64
 	MaxContextTokens   int
 	MaxOutputTokens    int
+	// MaxCheckSeconds bounds the total wall time of the external check runner for
+	// the run. Zero means "use the configured checks ceiling".
+	MaxCheckSeconds int
 }
 
 // Tracker is a thread-safe accountant for a single run.
@@ -140,3 +143,9 @@ func (t *Tracker) MaxOutputTokens() int { return t.limits.MaxOutputTokens }
 
 // MaxModelToolRounds exposes the configured exploration round ceiling.
 func (t *Tracker) MaxModelToolRounds() int { return t.limits.MaxModelToolRounds }
+
+// MaxContextTokens exposes the configured per-call context ceiling (0 = none).
+func (t *Tracker) MaxContextTokens() int { return t.limits.MaxContextTokens }
+
+// MaxCheckSeconds exposes the configured check-runner time ceiling (0 = none).
+func (t *Tracker) MaxCheckSeconds() int { return t.limits.MaxCheckSeconds }

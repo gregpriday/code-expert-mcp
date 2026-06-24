@@ -16,6 +16,9 @@ import (
 
 // Review runs the precision-first review workflow over a frozen Git change set.
 func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunOptions) (schema.ReviewResult, error) {
+	if err := validateReviewRequest(req); err != nil {
+		return schema.ReviewResult{}, err
+	}
 	runID := opts.RunID
 	if runID == "" {
 		runID = newRunID("review")
@@ -45,7 +48,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	manifest := rs.Manifest()
 
 	profile := resolveProfile(req.Profile, e.Cfg.Review.DefaultProfile)
-	limits := resolveLimits(e.Cfg, profile, req.Budget)
+	limits := resolveLimits(e.Cfg, profile, req.Budget, req.Retrieval)
 	tracker := budget.New(limits)
 	usage := &usageAccumulator{}
 	evid := evidence.NewStore(snap.ID())

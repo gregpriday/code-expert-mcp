@@ -38,13 +38,19 @@ var (
 )
 
 // normalizeTask deterministically extracts the goal, anchors, and explicit paths
-// from the instructions and optional task contract. It never asks the user.
-func normalizeTask(req schema.PlanRequest, snap *repo.Snapshot) schema.InterpretedTask {
+// from the instructions and optional task contract. It never asks the user. The
+// full task contract is carried forward (id, title, known facts, prior plan) so
+// nothing the caller supplied is silently discarded before synthesis.
+func normalizeTask(req planHelpInput, snap *repo.Snapshot) schema.InterpretedTask {
 	it := schema.InterpretedTask{Goal: strings.TrimSpace(req.Instructions), Mode: req.Mode}
 	if req.Task != nil {
+		it.TaskID = req.Task.ID
+		it.Title = req.Task.Title
 		it.Constraints = req.Task.Constraints
 		it.AcceptanceCriteria = req.Task.AcceptanceCriteria
 		it.NonGoals = req.Task.NonGoals
+		it.KnownFacts = req.Task.KnownFacts
+		it.PriorPlan = req.Task.PriorPlan
 		if it.Goal == "" {
 			it.Goal = req.Task.Description
 		}
@@ -55,13 +61,18 @@ func normalizeTask(req schema.PlanRequest, snap *repo.Snapshot) schema.Interpret
 		for _, c := range req.Task.AcceptanceCriteria {
 			anchors = append(anchors, extractAnchors(c)...)
 		}
+		for _, f := range req.Task.KnownFacts {
+			anchors = append(anchors, extractAnchors(f)...)
+		}
 	}
 	it.SearchAnchors = dedupeStrings(anchors)
 
 	// Resolve explicit paths that actually exist in the snapshot.
-	for _, a := range it.SearchAnchors {
-		if _, ok := snap.Stat(a); ok {
-			it.ExplicitPaths = append(it.ExplicitPaths, a)
+	if snap != nil {
+		for _, a := range it.SearchAnchors {
+			if _, ok := snap.Stat(a); ok {
+				it.ExplicitPaths = append(it.ExplicitPaths, a)
+			}
 		}
 	}
 	return it

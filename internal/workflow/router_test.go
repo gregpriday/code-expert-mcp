@@ -23,17 +23,17 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 		{schema.ProfileBalanced, 7},
 		{schema.ProfileDeep, 12},
 	} {
-		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}, schema.RetrievalOpts{}).MaxModelCalls; got != tc.want {
 			t.Errorf("%s default MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
 		}
 	}
 
 	// Timeout is wired from the provider request timeout (default and non-default).
-	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 30*time.Minute {
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}, schema.RetrievalOpts{}).Timeout; got != 30*time.Minute {
 		t.Errorf("Timeout = %v, want 30m (from provider.request_timeout)", got)
 	}
 	cfg.Provider.RequestTimeout = config.Duration(45 * time.Second)
-	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}).Timeout; got != 45*time.Second {
+	if got := resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}, schema.RetrievalOpts{}).Timeout; got != 45*time.Second {
 		t.Errorf("Timeout = %v, want 45s (from non-default provider.request_timeout)", got)
 	}
 
@@ -47,14 +47,14 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 		{schema.ProfileBalanced, 8},
 		{schema.ProfileDeep, 13},
 	} {
-		if got := resolveLimits(cfg, tc.profile, schema.Budget{}).MaxModelCalls; got != tc.want {
+		if got := resolveLimits(cfg, tc.profile, schema.Budget{}, schema.RetrievalOpts{}).MaxModelCalls; got != tc.want {
 			t.Errorf("%s configured MaxModelCalls = %d, want %d", tc.profile, got, tc.want)
 		}
 	}
 
 	// Configured byte-read baseline is honored.
 	cfg.Retrieval.MaxBytesRead = 8192
-	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{})
+	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{}, schema.RetrievalOpts{})
 	if l.MaxModelCalls != 13 {
 		t.Errorf("configured deep MaxModelCalls = %d, want 13", l.MaxModelCalls)
 	}
@@ -63,7 +63,7 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 	}
 
 	// A per-request budget still wins over the config baseline.
-	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2, MaxBytesRead: 4096})
+	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2, MaxBytesRead: 4096}, schema.RetrievalOpts{})
 	if l.MaxModelCalls != 2 || l.MaxBytesRead != 4096 {
 		t.Errorf("request budget override = (%d,%d), want (2,4096)", l.MaxModelCalls, l.MaxBytesRead)
 	}

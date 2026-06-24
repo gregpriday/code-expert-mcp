@@ -37,12 +37,12 @@ func Run(ctx context.Context, args []string) int {
 		return exitOK
 	case "help", "--help", "-h":
 		// Bare `help` with no further args prints usage; otherwise it is the
-		// help workflow (codeexpert_plan mode=help).
+		// help workflow (codeexpert_help).
 		if len(rest) == 0 {
 			printUsage(os.Stdout)
 			return exitOK
 		}
-		return cmdPlan(ctx, rest, schema.PlanModeHelp)
+		return cmdHelp(ctx, rest)
 	case "init":
 		return cmdInit(ctx, rest)
 	case "mcp":
@@ -50,7 +50,7 @@ func Run(ctx context.Context, args []string) int {
 	case "serve":
 		return cmdServe(ctx, rest)
 	case "plan":
-		return cmdPlan(ctx, rest, schema.PlanModePlan)
+		return cmdPlan(ctx, rest)
 	case "review":
 		return cmdReview(ctx, rest)
 	case "index":
@@ -79,7 +79,7 @@ Commands:
   mcp         Run the MCP server over stdio
   serve       Run the MCP server over Streamable HTTP
   plan        Produce an implementation plan
-  help        Diagnose a problem and recommend a direction
+  help        Answer an engineering question (explain, diagnose, decide, unblock)
   review      Review Git changes (working-tree, staged, range, commit, merge-base)
   index       Build/refresh the repository snapshot and report inventory
   doctor      Check environment, configuration, and provider connectivity

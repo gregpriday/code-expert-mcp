@@ -12,9 +12,11 @@ import (
 	"github.com/gregpriday/codeexpert/internal/workflow"
 )
 
-const planToolDescription = `Explore a repository and return either a detailed implementation plan (mode="plan") or focused engineering help and diagnosis (mode="help"). Read-only: never modifies the repository. Returns structured, evidence-backed output plus Markdown.`
+const planToolDescription = `Produce a detailed, evidence-backed implementation plan for a coding task: change points, dependencies, tests, validation commands, risks, and a step-by-step handoff another agent can follow. Read-only: never modifies the repository. Use this when you know WHAT to build and need a grounded plan for HOW. For diagnosing a failure or answering an open engineering question, use codeexpert_help instead; to review existing changes, use codeexpert_review.`
 
-const reviewToolDescription = `Review a frozen set of Git changes and return evidence-backed findings, coverage, and limitations. Precision-first: returns no findings when nothing meets the publication threshold, and never claims a change is safe to merge. Read-only.`
+const helpToolDescription = `Answer a single, focused engineering question against a repository: explain how something works, diagnose why it is failing, decide between options, or unblock a stuck agent. Returns a direct answer first, with evidence, ranked hypotheses (for diagnosis), and a recommended next action. Read-only. Use this when you are stuck or need understanding — not to produce a full implementation plan (use codeexpert_plan) or to review a diff (use codeexpert_review).`
+
+const reviewToolDescription = `Review a frozen set of Git changes and return evidence-backed findings, coverage, and limitations. Precision-first: returns no findings when nothing meets the publication threshold, and never claims a change is safe to merge. Read-only. Use this to critique an existing diff — not to plan new work (codeexpert_plan) or to answer a question (codeexpert_help).`
 
 // readOnlyAnnotations returns the annotation set shared by both tools. They
 // never modify the repository (ReadOnlyHint), but they reach the filesystem,
@@ -33,8 +35,17 @@ func readOnlyAnnotations() *mcp.ToolAnnotations {
 func planToolDef() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "codeexpert_plan",
-		Title:       "CodeExpert Plan / Help",
+		Title:       "CodeExpert Plan",
 		Description: planToolDescription,
+		Annotations: readOnlyAnnotations(),
+	}
+}
+
+func helpToolDef() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "codeexpert_help",
+		Title:       "CodeExpert Help",
+		Description: helpToolDescription,
 		Annotations: readOnlyAnnotations(),
 	}
 }
@@ -57,6 +68,19 @@ func registerTools(s *mcp.Server, d Deps) {
 		res, err := d.Engine.Plan(ctx, in, opts)
 		if err != nil {
 			d.Logger.Warn("plan tool error", "code", schema.AsToolError(err).Code)
+			return nil, schema.PlanResult{}, toolError(err)
+		}
+		return &mcp.CallToolResult{Content: textContent(planTextSummary(res))}, res, nil
+	})
+
+	mcp.AddTool(s, helpToolDef(), func(ctx context.Context, req *mcp.CallToolRequest, in schema.HelpRequest) (*mcp.CallToolResult, schema.PlanResult, error) {
+		opts := workflow.RunOptions{
+			AllowedRoots: rootsFromRequest(ctx, req),
+			Progress:     progressFromRequest(ctx, req),
+		}
+		res, err := d.Engine.Help(ctx, in, opts)
+		if err != nil {
+			d.Logger.Warn("help tool error", "code", schema.AsToolError(err).Code)
 			return nil, schema.PlanResult{}, toolError(err)
 		}
 		return &mcp.CallToolResult{Content: textContent(planTextSummary(res))}, res, nil

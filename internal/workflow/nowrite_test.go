@@ -66,7 +66,7 @@ func TestNoWriteInvariant(t *testing.T) {
 
 	eng := newTestEngine(rel)
 	if _, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Investigate the nil dereference in main.go", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Investigate the nil dereference in main.go",
 	}, RunOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}

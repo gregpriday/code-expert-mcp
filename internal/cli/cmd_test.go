@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/gregpriday/codeexpert/internal/config"
-	"github.com/gregpriday/codeexpert/internal/schema"
 )
 
 // loadWritten loads and validates a config file written by init.
@@ -132,10 +131,16 @@ func TestCLIEnumValidationExits2(t *testing.T) {
 		run  func() int
 	}{
 		{"plan bad profile", func() int {
-			return cmdPlan(context.Background(), []string{"--profile", "bogus", "do it"}, schema.PlanModePlan)
+			return cmdPlan(context.Background(), []string{"--profile", "bogus", "do it"})
 		}},
 		{"plan bad format", func() int {
-			return cmdPlan(context.Background(), []string{"--format", "bogus", "do it"}, schema.PlanModePlan)
+			return cmdPlan(context.Background(), []string{"--format", "bogus", "do it"})
+		}},
+		{"help bad answer-type", func() int {
+			return cmdHelp(context.Background(), []string{"--answer-type", "bogus", "why?"})
+		}},
+		{"help bad profile", func() int {
+			return cmdHelp(context.Background(), []string{"--profile", "bogus", "why?"})
 		}},
 		{"review bad format", func() int { return cmdReview(context.Background(), []string{"--format", "bogus"}) }},
 		{"review bad scope", func() int { return cmdReview(context.Background(), []string{"--scope", "bogus"}) }},

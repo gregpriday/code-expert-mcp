@@ -83,7 +83,7 @@ func TestPlanEndToEnd(t *testing.T) {
 	dir, rel := tempGitRepo(t)
 	eng := newTestEngine(rel)
 	res, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Add a greeting flag to main.go", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Add a greeting flag to main.go",
 	}, RunOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -105,8 +105,8 @@ func TestPlanEndToEnd(t *testing.T) {
 func TestHelpEndToEnd(t *testing.T) {
 	dir, rel := tempGitRepo(t)
 	eng := newTestEngine(rel)
-	res, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Why does it crash?", Mode: schema.PlanModeHelp,
+	res, err := eng.Help(context.Background(), schema.HelpRequest{
+		Root: dir, Question: "Why does it crash?",
 	}, RunOptions{})
 	if err != nil {
 		t.Fatalf("help: %v", err)
@@ -197,7 +197,7 @@ func TestPlanPropagatesProviderError(t *testing.T) {
 	cfg.Cache.Enabled = false
 	eng := &Engine{Cfg: cfg, Provider: errorProvider{}, Log: telemetry.Nop()}
 	_, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Add a greeting flag", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Add a greeting flag",
 	}, RunOptions{})
 	if err == nil {
 		t.Fatal("expected Plan to propagate the provider failure")
@@ -213,7 +213,7 @@ func TestSessionRequestsAreStreamed(t *testing.T) {
 	cfg.Cache.Enabled = false
 	eng := &Engine{Cfg: cfg, Provider: rec, Log: telemetry.Nop()}
 	if _, err := eng.Plan(context.Background(), schema.PlanRequest{
-		Root: dir, Instructions: "Add a greeting flag", Mode: schema.PlanModePlan,
+		Root: dir, Instructions: "Add a greeting flag",
 	}, RunOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
