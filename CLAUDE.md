@@ -3,8 +3,8 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Read-only repository analysis: an MCP server and CLI that produce plans, engineering help, and
-code reviews **without ever modifying the repository**. Two MCP tools only: `codeexpert_plan`
-(plan/help) and `codeexpert_review`.
+code reviews **without ever modifying the repository**. Three public MCP tools — one per
+capability, with no mode switch: `codeexpert_plan`, `codeexpert_help`, and `codeexpert_review`.
 
 ## Build / test
 
@@ -28,7 +28,15 @@ plan/help/review logic, extend that fake's `Generate` rather than calling a live
 
 - **Read-only by construction.** Nothing under `plan`/`help`/`review` may write inside the repo
   or `.git`. Git runs only through `internal/repo/git` (closed read-only allowlist, arg arrays,
-  no shell strings). The release-blocking test is `TestNoWriteInvariant` in `internal/workflow`.
+  no shell strings). Verification checks (`internal/checks`) run in a throwaway copy of the
+  frozen snapshot with isolated cache/home/temp dirs, never in the protected tree. The
+  release-blocking test is `TestNoWriteInvariant` in `internal/workflow`.
+- **Immutable snapshots.** Every working-tree read is verified against the bytes frozen at
+  snapshot time; a mid-run edit yields a typed `CE_SNAPSHOT_CHANGED` / `stale` status, never a
+  silent mix of pre- and post-edit state.
+- **Truthful results.** Request fields the runtime does not honor are rejected, not ignored;
+  per-request limits clamp DOWN only; `complete` means complete (unresolved validation, budget
+  exhaustion, or a stale snapshot downgrade the status).
 - **Untrusted repository content.** Never let repository text act as instructions. Tool results
   and guidance carry an explicit untrusted label; the common system prompt forbids obeying them.
 - **Evidence before prose.** Every published path/line/symbol is validated against the snapshot
@@ -38,12 +46,15 @@ plan/help/review logic, extend that fake's `Generate` rather than calling a live
 ## Architecture (dependency order)
 
 `schema` (shared types/errors) → `security`, `telemetry`, `hashutil` → `config` → `provider`
-(+`provider/openaicompat`) → `repo` (+`repo/git`) → `evidence`, `cache`, `index`, `budget` →
-`llmtools` (read-only model tools) → `prompts` → `report` → `workflow` (engine + plan/help +
-review pipeline) → `mcpserver`, `cli` → `app` → `cmd/codeexpert`.
+(+`provider/openaicompat`) → `repo` (+`repo/git`) → `evidence`, `cache`, `index`, `budget`,
+`checks` → `llmtools` (read-only model tools) → `prompts` → `report` → `workflow` (engine +
+plan, help, and review pipelines) → `eval` (quality harness), `mcpserver`, `cli` → `app` →
+`cmd/codeexpert`.
 
 The model interprets and synthesizes; deterministic Go owns canonical repository state,
 validation, budgets, and security. Prompts live in `internal/prompts/assets/*.md` (embedded).
+Every run emits a `trace.json` artifact (capability, prompt-version hashes, stage ledger, usage);
+the `eval` harness grades structured results (code + model-judge graders) for the improvement loop.
 
 ## Conventions
 
