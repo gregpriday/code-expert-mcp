@@ -156,3 +156,38 @@ func TestReviewableFilesIncludesDeletions(t *testing.T) {
 		t.Error("vendored/binary files must stay out of scope")
 	}
 }
+
+// TestReviewRunsConfiguredCheckInIsolation proves verification modes are real: a
+// configured safe check actually executes during review, surfaces as a
+// CheckResult, and leaves the protected repository untouched.
+func TestReviewRunsConfiguredCheckInIsolation(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, rel), []byte("package main\n\nfunc main() {\n\tvar x *int\n\t_ = *x\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Cache.Enabled = false
+	cfg.Checks = config.ChecksConfig{
+		Mode: "off",
+		Command: []config.CheckCommand{
+			{Name: "git-version", Argv: []string{"git", "--version"}, Enabled: true, Safe: true},
+		},
+	}
+	eng := &Engine{Cfg: cfg, Provider: &fakeProvider{existingFile: rel}, Log: telemetry.Nop()}
+
+	before := fingerprintTree(t, dir)
+	res, err := eng.Review(context.Background(), schema.ReviewRequest{
+		Root:         dir,
+		Target:       schema.ReviewTarget{Type: schema.TargetWorkingTree},
+		Verification: schema.VerifySafe,
+	}, RunOptions{})
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if len(res.Checks) != 1 || !res.Checks[0].Passed {
+		t.Fatalf("expected the configured safe check to run and pass, got %+v", res.Checks)
+	}
+	if after := fingerprintTree(t, dir); after != before {
+		t.Fatal("review with verification mutated the repository — no-write invariant violated")
+	}
+}

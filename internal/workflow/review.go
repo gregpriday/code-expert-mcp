@@ -4,8 +4,10 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gregpriday/codeexpert/internal/budget"
+	"github.com/gregpriday/codeexpert/internal/checks"
 	"github.com/gregpriday/codeexpert/internal/config"
 	"github.com/gregpriday/codeexpert/internal/evidence"
 	"github.com/gregpriday/codeexpert/internal/llmtools"
@@ -74,7 +76,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	reviewable := reviewableFiles(manifest, e.Cfg, req.Policy)
 	if len(reviewable) == 0 {
 		return e.assembleReview(ctx, runID, rs, riskMap, nil, nil, evid, tracker, usage,
-			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile, req.Output.IncludeTrace), nil
+			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile, nil, req.Output.IncludeTrace), nil
 	}
 
 	// Enrich the manifest with enclosing changed symbols so the tool-less
@@ -121,17 +123,37 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	if reason, limited := tracker.Exhausted(); limited {
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: reason + "; coverage may be incomplete"})
 	}
+
+	// Verification: run the applicable checks in an isolated copy of the snapshot.
+	// off runs nothing; safe runs read-only analyzers; configured/deep run the
+	// project's checks. Executed checks are the only source of evidence level A.
+	var checkResults []schema.CheckResult
+	if runner := checks.NewRunner(snap, e.Cfg.Checks, req.Verification, e.Log); runner.Enabled() {
+		progress("verification", "running checks (isolated)")
+		results, checkEvid, cerr := runner.Run(ctx, time.Duration(limits.MaxCheckSeconds)*time.Second)
+		if cerr != nil {
+			limitations = append(limitations, schema.Limitation{Stage: "checks", Message: "check runner: " + cerr.Error()})
+		}
+		checkResults = results
+		for _, rec := range checkEvid {
+			evid.Add(rec)
+		}
+	}
+
 	progress("complete", "done")
-	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile, req.Output.IncludeTrace), nil
+	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile, checkResults, req.Output.IncludeTrace), nil
 }
 
 // assembleReview builds the final ReviewResult, coverage, summary, and renders.
 func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.ReviewSnapshot, riskMap []schema.RiskArea,
 	findings []schema.ReviewFinding, suppressed *schema.SuppressionStats, evid *evidence.Store, tracker *budget.Tracker,
-	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile, includeTrace bool) schema.ReviewResult {
+	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile, checkResults []schema.CheckResult, includeTrace bool) schema.ReviewResult {
 
 	manifest := rs.Manifest()
 	coverage := buildCoverage(manifest, e.Cfg, riskMap, findings)
+	for _, c := range checkResults {
+		coverage.ChecksRun = append(coverage.ChecksRun, c.Name)
+	}
 	status := schema.StatusComplete
 	if _, limited := tracker.Exhausted(); tracker.TimedOut() || limited {
 		status = schema.StatusPartial
@@ -176,6 +198,7 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 		RiskMap:     riskMap,
 		Findings:    findings,
 		Coverage:    coverage,
+		Checks:      checkResults,
 		Limitations: limitations,
 		Usage:       finalizeUsage(usage, tracker),
 	}
