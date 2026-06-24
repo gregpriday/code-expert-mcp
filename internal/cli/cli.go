@@ -55,6 +55,8 @@ func Run(ctx context.Context, args []string) int {
 		return cmdReview(ctx, rest)
 	case "index":
 		return cmdIndex(ctx, rest)
+	case "eval":
+		return cmdEval(ctx, rest)
 	case "doctor":
 		return cmdDoctor(ctx, rest)
 	case "config":
@@ -82,6 +84,7 @@ Commands:
   help        Answer an engineering question (explain, diagnose, decide, unblock)
   review      Review Git changes (working-tree, staged, range, commit, merge-base)
   index       Build/refresh the repository snapshot and report inventory
+  eval        Run the quality-evaluation harness over a directory of cases
   doctor      Check environment, configuration, and provider connectivity
   config      Inspect or migrate configuration (config print|migrate)
   cache       Manage the cache (cache status|gc|clear)

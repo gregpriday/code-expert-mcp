@@ -1,0 +1,19 @@
+{
+  "id": "plan-add-retries",
+  "capability": "plan",
+  "plan": {
+    "root": "REPLACE_WITH_REPO_ROOT",
+    "instructions": "Add idempotent retries to the invoice submission path",
+    "task": {
+      "acceptance_criteria": [
+        "Submitting the same invoice twice does not create a duplicate",
+        "Transient network errors are retried with backoff"
+      ]
+    }
+  },
+  "expect": {
+    "must_complete": true,
+    "min_steps": 1,
+    "require_traceability": true
+  }
+}

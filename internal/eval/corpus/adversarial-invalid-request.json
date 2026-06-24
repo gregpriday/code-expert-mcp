@@ -1,0 +1,6 @@
+{
+  "id": "adversarial-empty-instructions",
+  "capability": "plan",
+  "plan": { "instructions": "" },
+  "expect": { "must_error_code": "CE_INVALID_ARGUMENT" }
+}

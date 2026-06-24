@@ -1,0 +1,12 @@
+{
+  "id": "review-working-tree",
+  "capability": "review",
+  "review": {
+    "root": "REPLACE_WITH_REPO_ROOT",
+    "target": { "type": "working_tree" },
+    "instructions": "Check idempotency and transaction boundaries"
+  },
+  "expect": {
+    "forbid_approval_language": true
+  }
+}
