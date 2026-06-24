@@ -44,3 +44,6 @@ go.work.sum
 # Local runtime cache/run artifacts, only if cache.dir is pointed inside the repo
 # (the cache defaults to the OS user cache dir and stays out of the repo)
 .codeexpert/
+
+# Local scratch/temp directory
+.tmp/
