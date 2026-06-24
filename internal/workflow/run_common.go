@@ -15,6 +15,16 @@ import (
 	"github.com/gregpriday/codeexpert/internal/schema"
 )
 
+// hasStageLimitation reports whether any limitation was recorded for the stage.
+func hasStageLimitation(lims []schema.Limitation, stage string) bool {
+	for _, l := range lims {
+		if l.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
 // isBudgetTimeout reports whether an error is the run's own budget/time
 // exhaustion (rather than a caller cancellation or a real failure), so callers
 // can convert it into a truthful partial result instead of aborting.

@@ -130,7 +130,7 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 			limitations = lims
 		}
 	} else {
-		plan, lims, perr := e.synthesizePlan(ctx, sess, snap, evid)
+		plan, lims, perr := e.synthesizePlan(ctx, sess, it.AcceptanceCriteria, snap, evid)
 		if perr != nil {
 			synthErr = perr
 		} else {
@@ -152,8 +152,10 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 	progress("validation", "assembling result")
 	status := schema.StatusComplete
 	// An incomplete synthesis (budget/timeout) is a partial result even if the
-	// tracker's own counters did not trip (e.g. a context-token overflow).
-	if synthErr != nil || result.Plan == nil && result.Help == nil {
+	// tracker's own counters did not trip (e.g. a context-token overflow). So is a
+	// plan/help that came back with unresolved validation issues after the repair
+	// attempt: "complete" must mean complete.
+	if synthErr != nil || (result.Plan == nil && result.Help == nil) || hasStageLimitation(limitations, "validation") {
 		status = schema.StatusPartial
 	}
 	if tracker.TimedOut() {
@@ -302,18 +304,18 @@ func buildPlanExploreMessage(it schema.InterpretedTask, preflight string) string
 	return b.String()
 }
 
-func (e *Engine) synthesizePlan(ctx context.Context, sess *Session, snap *repo.Snapshot, evid *evidence.Store) (*schema.ImplementationPlan, []schema.Limitation, error) {
+func (e *Engine) synthesizePlan(ctx context.Context, sess *Session, criteria []string, snap *repo.Snapshot, evid *evidence.Store) (*schema.ImplementationPlan, []schema.Limitation, error) {
 	out := inferSchema[schema.ImplementationPlan]("implementation_plan")
 	instr := prompts.MustGet(prompts.PlanFinalize) + "\n\n" + evidenceCatalog(evid) +
-		"\n\nReturn ONLY the implementation plan as a JSON object matching the schema. Every repository claim must reference evidence IDs listed above."
+		"\n\nReturn ONLY the implementation plan as a JSON object matching the schema. Every repository claim must reference evidence IDs listed above. Populate `traceability`: map every acceptance criterion to the step IDs that implement it and the tests that validate it."
 	raw, err := sess.Synthesize(ctx, instr, out)
 	if err != nil {
 		return nil, nil, err
 	}
 	plan, verr := decodePlan(raw)
 	if verr == nil {
-		if issues := validatePlan(ctx, plan, snap, evid, e.Cfg); len(issues) > 0 {
-			plan, verr = e.repairPlan(ctx, sess, snap, evid, issues)
+		if issues := validatePlan(ctx, plan, criteria, snap, evid, e.Cfg); len(issues) > 0 {
+			plan, verr = e.repairPlan(ctx, sess, criteria, snap, evid, issues)
 		}
 	}
 	if verr != nil {

@@ -427,6 +427,21 @@ func writePlanBody(b *strings.Builder, p schema.ImplementationPlan) {
 		b.WriteString("\n")
 	}
 
+	if len(p.Traceability) > 0 {
+		b.WriteString("## Acceptance-criterion traceability\n\n")
+		for _, cc := range p.Traceability {
+			fmt.Fprintf(b, "- %s", cc.Criterion)
+			if len(cc.StepIDs) > 0 {
+				fmt.Fprintf(b, " → steps %s", joinCode(cc.StepIDs))
+			}
+			b.WriteString("\n")
+			if len(cc.Tests) > 0 {
+				fmt.Fprintf(b, "  - Validated by: %s\n", strings.Join(cc.Tests, "; "))
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	if len(p.DefinitionOfDone) > 0 {
 		b.WriteString("## Definition of done\n\n")
 		writeBullets(b, p.DefinitionOfDone)
