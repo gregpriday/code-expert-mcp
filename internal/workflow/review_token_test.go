@@ -197,6 +197,25 @@ func TestBuildLocationPacketIncludesRealCode(t *testing.T) {
 	}
 }
 
+// TestNumberedSnippetClampsPastEOF proves a location far past EOF still renders
+// the file tail (with line numbers) instead of an empty block.
+func TestNumberedSnippetClampsPastEOF(t *testing.T) {
+	content := []byte("line1\nline2\nline3\n")
+	// start/end well past the 3-line file would leave lo > hi without the clamp.
+	got := numberedSnippet(content, 100, 105, 4)
+	if got == "" {
+		t.Fatal("a past-EOF location must still render the file tail, got empty")
+	}
+	if !strings.Contains(got, "line3") {
+		t.Errorf("expected the file tail to render, got:\n%s", got)
+	}
+	// A normal in-range location renders the cited lines with numbers.
+	mid := numberedSnippet(content, 2, 2, 1)
+	if !strings.Contains(mid, "    2| line2") {
+		t.Errorf("expected numbered line 2, got:\n%s", mid)
+	}
+}
+
 func TestConfirmationFromEvidence(t *testing.T) {
 	cases := map[schema.EvidenceLevel]schema.ConfirmationStatus{
 		schema.EvidenceExecutable:  schema.ConfirmedByExecution,

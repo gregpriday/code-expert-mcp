@@ -100,6 +100,15 @@ func numberedSnippet(content []byte, start, end, ctxLines int) string {
 			hi = len(lines)
 		}
 	}
+	// A location past EOF (a model hallucination) would leave lo > hi and render
+	// nothing; clamp lo down so the verifier still sees the file tail with context
+	// rather than an empty code block.
+	if lo > hi {
+		lo = hi - 2*ctxLines
+		if lo < 1 {
+			lo = 1
+		}
+	}
 	var b strings.Builder
 	for i := lo; i <= hi; i++ {
 		fmt.Fprintf(&b, "%5d| %s\n", i, lines[i-1])
