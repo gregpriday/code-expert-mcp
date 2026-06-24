@@ -222,6 +222,83 @@ func TestLexicalSearchCancelledContext(t *testing.T) {
 	}
 }
 
+func TestLexicalSearchRanksNameAndDefinition(t *testing.T) {
+	files := map[string]string{
+		// Incidental usage only: no name match and no definition line.
+		"server/handler.go": "package server\n\n// reads from cache\nfunc h() { cache(); cache() }\n",
+		// Name match plus a definition line, same number of matching lines.
+		"cache.go": "package cache\n\nfunc cache() {}\n",
+	}
+	snap := buildSnapshot(t, files)
+	e := NewLexicalEngine(snap, 100)
+	res, err := e.SearchDetailed(context.Background(), SearchQuery{Pattern: "cache", Mode: ModeLiteral})
+	if err != nil {
+		t.Fatalf("SearchDetailed: %v", err)
+	}
+	if len(res.Hits) == 0 {
+		t.Fatal("expected hits")
+	}
+	if res.Hits[0].Path != "cache.go" {
+		t.Errorf("expected cache.go to rank first (name + definition), got %q", res.Hits[0].Path)
+	}
+	if res.FilesMatched != 2 {
+		t.Errorf("FilesMatched = %d, want 2", res.FilesMatched)
+	}
+	if res.Truncated {
+		t.Error("Truncated should be false when all matches fit the limit")
+	}
+}
+
+func TestLexicalSearchDetailedTruncation(t *testing.T) {
+	files := map[string]string{
+		"a.go": "package p\nvar x = token\n",
+		"b.go": "package p\nvar y = token\n",
+		"c.go": "package p\nvar z = token\n",
+	}
+	snap := buildSnapshot(t, files)
+	e := NewLexicalEngine(snap, 100)
+	res, err := e.SearchDetailed(context.Background(), SearchQuery{Pattern: "token", Mode: ModeLiteral, MaxResults: 2})
+	if err != nil {
+		t.Fatalf("SearchDetailed: %v", err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("expected 2 hits (capped), got %d", len(res.Hits))
+	}
+	if res.FilesMatched != 3 {
+		t.Errorf("FilesMatched = %d, want 3", res.FilesMatched)
+	}
+	if !res.Truncated {
+		t.Error("expected Truncated=true when matched files exceed the limit")
+	}
+}
+
+func TestSearchPathsRanking(t *testing.T) {
+	files := map[string]string{
+		"cache.go":         "package p\n", // basename prefix match (strong)
+		"x/oldcache.go":    "package p\n", // basename substring match
+		"cachelib/util.go": "package p\n", // full-path substring match only
+		"unrelated.go":     "package p\n", // no match
+	}
+	snap := buildSnapshot(t, files)
+	e := NewLexicalEngine(snap, 100)
+	res, err := e.SearchDetailed(context.Background(), SearchQuery{Pattern: "cache", Mode: ModePath})
+	if err != nil {
+		t.Fatalf("SearchDetailed: %v", err)
+	}
+	want := []string{"cache.go", "x/oldcache.go", "cachelib/util.go"}
+	if len(res.Hits) != len(want) {
+		t.Fatalf("got %d path hits, want %d: %+v", len(res.Hits), len(want), res.Hits)
+	}
+	for i, w := range want {
+		if res.Hits[i].Path != w {
+			t.Errorf("path rank %d = %q, want %q", i, res.Hits[i].Path, w)
+		}
+	}
+	if res.FilesMatched != 3 {
+		t.Errorf("FilesMatched = %d, want 3", res.FilesMatched)
+	}
+}
+
 func TestFindSymbolGo(t *testing.T) {
 	snap := buildSnapshot(t, searchFiles())
 	si := NewSymbolIndex(snap)

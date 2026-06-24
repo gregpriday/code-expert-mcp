@@ -78,9 +78,10 @@ func New(opts Options) *Registry {
 		guidance: opts.Guidance,
 		checks:   opts.Checks,
 		log:      log,
-		lex:      index.NewLexicalEngine(opts.Snapshot, opts.Config.Retrieval.SearchResultLimit),
-		syms:     index.NewSymbolIndex(opts.Snapshot),
-		tools:    map[string]tool{},
+		lex: index.NewLexicalEngine(opts.Snapshot, opts.Config.Retrieval.SearchResultLimit,
+			index.WithTrigramFilter(opts.Config.Retrieval.TrigramFilter, opts.Config.Retrieval.TrigramMaxPerFile)),
+		syms:  index.NewSymbolIndex(opts.Snapshot),
+		tools: map[string]tool{},
 	}
 	r.registerCommon()
 	if r.review != nil {

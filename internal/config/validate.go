@@ -86,7 +86,7 @@ func Validate(c *Config) error {
 	// Budgets / retrieval sanity.
 	if c.Retrieval.MaxFilesPerRun < 0 || c.Retrieval.MaxFileReads < 0 ||
 		c.Retrieval.MaxContextTokens < 0 || c.Retrieval.MaxModelToolRounds < 0 ||
-		c.Retrieval.MaxBytesRead < 0 {
+		c.Retrieval.MaxBytesRead < 0 || c.Retrieval.TrigramMaxPerFile < 0 {
 		return schema.NewError(schema.CodeConfigInvalid, "retrieval limits must not be negative")
 	}
 	if c.Server.MaxConcurrentRuns < 1 {

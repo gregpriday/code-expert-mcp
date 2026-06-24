@@ -7,8 +7,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"math"
+	"path"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/gregpriday/codeexpert/internal/repo"
@@ -48,6 +52,17 @@ type SearchHit struct {
 	ContextBefore []string `json:"context_before,omitempty"`
 	ContextAfter  []string `json:"context_after,omitempty"`
 	FileHash      string   `json:"file_hash"`
+	// Section is the nearest enclosing Markdown heading (without its leading
+	// '#'), set only for hits in Markdown files so a result locates itself.
+	Section string `json:"section,omitempty"`
+}
+
+// SearchResult is a ranked set of hits plus coverage metadata, so callers can
+// tell when matches were ranked and capped rather than exhaustive.
+type SearchResult struct {
+	Hits         []SearchHit
+	FilesMatched int  // distinct files with at least one match (before the limit)
+	Truncated    bool // some matches were dropped to honor the result limit
 }
 
 // LexicalEngine searches a snapshot's text files.
@@ -55,20 +70,80 @@ type LexicalEngine struct {
 	snap        *repo.Snapshot
 	maxPerFile  int
 	globalLimit int
+
+	// Optional trigram pre-filter. When enabled, the index is built lazily on the
+	// first content search and reused for the engine's lifetime; it only narrows
+	// the files the exact verifier scans and never changes results.
+	trigramEnabled bool
+	trigramBudget  int
+	triOnce        sync.Once
+	tri            *trigramIndex
+}
+
+// LexicalOption configures a LexicalEngine at construction.
+type LexicalOption func(*LexicalEngine)
+
+// WithTrigramFilter enables (or disables) the trigram candidate pre-filter.
+// maxPerFile bounds the distinct trigrams indexed per file before that file is
+// treated as an unconditional candidate; <= 0 uses the default.
+func WithTrigramFilter(enabled bool, maxPerFile int) LexicalOption {
+	return func(e *LexicalEngine) {
+		e.trigramEnabled = enabled
+		if maxPerFile > 0 {
+			e.trigramBudget = maxPerFile
+		}
+	}
 }
 
 // NewLexicalEngine builds an engine. globalLimit caps total hits across files.
-func NewLexicalEngine(snap *repo.Snapshot, globalLimit int) *LexicalEngine {
+// The trigram pre-filter is off unless enabled via WithTrigramFilter.
+func NewLexicalEngine(snap *repo.Snapshot, globalLimit int, opts ...LexicalOption) *LexicalEngine {
 	if globalLimit <= 0 {
 		globalLimit = 100
 	}
-	return &LexicalEngine{snap: snap, maxPerFile: 20, globalLimit: globalLimit}
+	e := &LexicalEngine{
+		snap:          snap,
+		maxPerFile:    20,
+		globalLimit:   globalLimit,
+		trigramBudget: defaultTrigramsPerFile,
+	}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
-// Search executes a query over the snapshot, honoring caps and cancellation.
+// trigram returns the lazily-built trigram index, or nil if filtering is off. The
+// index is built once (under sync.Once) with a background context so it is always
+// complete and reusable regardless of any single request's cancellation.
+func (e *LexicalEngine) trigram() *trigramIndex {
+	if !e.trigramEnabled {
+		return nil
+	}
+	e.triOnce.Do(func() {
+		e.tri = buildTrigramIndex(e.snap, e.trigramBudget)
+	})
+	return e.tri
+}
+
+// Search executes a query over the snapshot and returns ranked hits, honoring
+// caps and cancellation. It is a thin wrapper over SearchDetailed for callers
+// that only need the hits.
 func (e *LexicalEngine) Search(ctx context.Context, q SearchQuery) ([]SearchHit, error) {
+	res, err := e.SearchDetailed(ctx, q)
+	return res.Hits, err
+}
+
+// SearchDetailed executes a query and returns ranked hits with coverage
+// metadata. Files are scored by cheap, deterministic signals — name/path match,
+// a definition-shaped match line, match count (with diminishing returns), minus
+// a penalty for test/generated/vendored files — then hits are emitted in score
+// order (tie-broken by path) until the limit is reached. To rank correctly it
+// scans all eligible files instead of stopping at the first N matches; the
+// in-memory snapshot's byte budget bounds that work.
+func (e *LexicalEngine) SearchDetailed(ctx context.Context, q SearchQuery) (SearchResult, error) {
 	if strings.TrimSpace(q.Pattern) == "" {
-		return nil, schema.NewError(schema.CodeInvalidArgument, "empty search pattern")
+		return SearchResult{}, schema.NewError(schema.CodeInvalidArgument, "empty search pattern")
 	}
 	limit := q.MaxResults
 	if limit <= 0 || limit > e.globalLimit {
@@ -88,33 +163,101 @@ func (e *LexicalEngine) Search(ctx context.Context, q SearchQuery) ([]SearchHit,
 
 	re, err := e.compile(q)
 	if err != nil {
-		return nil, err
+		return SearchResult{}, err
 	}
 
-	var hits []SearchHit
-	for _, fm := range e.snap.ListFiles() {
+	files := e.snap.ListFiles()
+
+	// Narrow the file set with the trigram pre-filter when it can prove a
+	// narrowing is sound; otherwise scan everything. The filter only ever yields a
+	// superset of the files that can match, so the verified results are identical
+	// to a full scan — it just skips files that provably cannot match.
+	var candidates []int32
+	filtered := false
+	if ti := e.trigram(); ti != nil {
+		if cand, ok := ti.candidates(q.Mode, q.Pattern, q.CaseInsensitive); ok {
+			candidates, filtered = cand, true
+		}
+	}
+
+	type fileMatch struct {
+		path  string
+		hits  []SearchHit
+		score float64
+	}
+	var matches []fileMatch
+	totalHits := 0
+	visit := func(fm repo.FileMeta) error {
 		if err := ctx.Err(); err != nil {
-			return hits, schema.NewError(schema.CodeCancelled, "search cancelled")
+			return schema.NewError(schema.CodeCancelled, "search cancelled")
 		}
 		if !e.eligible(fm, q) {
-			continue
+			return nil
 		}
 		if !matchGlobs(fm.Path, q.Include, q.Exclude) {
-			continue
+			return nil
 		}
 		fc, rerr := e.snap.ReadFile(ctx, fm.Path)
 		if rerr != nil || fc.Meta.Binary {
-			continue
+			return nil
 		}
 		fileHits := searchFile(fc, re, ctxLines, e.maxPerFile)
-		for _, h := range fileHits {
-			hits = append(hits, h)
-			if len(hits) >= limit {
-				return hits, nil
+		if len(fileHits) == 0 {
+			return nil
+		}
+		annotateSections(fm, fc, fileHits)
+		totalHits += len(fileHits)
+		matches = append(matches, fileMatch{
+			path:  fm.Path,
+			hits:  fileHits,
+			score: scoreFile(fm, fileHits, q),
+		})
+		return nil
+	}
+
+	if filtered {
+		for _, id := range candidates {
+			if int(id) < 0 || int(id) >= len(files) {
+				continue
+			}
+			if err := visit(files[id]); err != nil {
+				return SearchResult{}, err
+			}
+		}
+	} else {
+		for _, fm := range files {
+			if err := visit(fm); err != nil {
+				return SearchResult{}, err
 			}
 		}
 	}
-	return hits, nil
+
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].path < matches[j].path
+	})
+
+	hits := make([]SearchHit, 0, limit)
+	emittedFiles := 0
+	for _, m := range matches {
+		if len(hits) >= limit {
+			break
+		}
+		emittedFiles++
+		for _, h := range m.hits {
+			if len(hits) >= limit {
+				break
+			}
+			hits = append(hits, h)
+		}
+	}
+	return SearchResult{
+		Hits:         hits,
+		FilesMatched: len(matches),
+		Truncated:    len(hits) < totalHits || emittedFiles < len(matches),
+	}, nil
 }
 
 func (e *LexicalEngine) eligible(fm repo.FileMeta, q SearchQuery) bool {
@@ -153,32 +296,413 @@ func (e *LexicalEngine) compile(q SearchQuery) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-func (e *LexicalEngine) searchPaths(q SearchQuery, limit int) []SearchHit {
-	needle := q.Pattern
-	if q.CaseInsensitive || q.Mode == ModePath {
-		needle = strings.ToLower(needle)
+// searchPaths matches against file paths and ranks them so that the closest
+// name matches surface first: exact basename, then basename prefix, then
+// basename substring, then a full-path substring, then a glob match.
+func (e *LexicalEngine) searchPaths(q SearchQuery, limit int) SearchResult {
+	needle := strings.ToLower(q.Pattern)
+	type pathMatch struct {
+		hit   SearchHit
+		score float64
 	}
-	var hits []SearchHit
+	var matches []pathMatch
 	for _, fm := range e.snap.ListFiles() {
 		p := fm.Path
-		cmp := p
-		if q.CaseInsensitive || q.Mode == ModePath {
-			cmp = strings.ToLower(p)
-		}
-		matched := strings.Contains(cmp, needle)
-		if !matched {
+		base := strings.ToLower(path.Base(p))
+		lp := strings.ToLower(p)
+		var score float64
+		matched := true
+		switch {
+		case base == needle:
+			score = 100
+		case strings.HasPrefix(base, needle):
+			score = 50
+		case strings.Contains(base, needle):
+			score = 25
+		case strings.Contains(lp, needle):
+			score = 10
+		default:
 			if ok, _ := doublestar.Match(q.Pattern, p); ok {
-				matched = true
+				score = 5
+			} else {
+				matched = false
 			}
 		}
 		if matched {
-			hits = append(hits, SearchHit{Path: p, Line: 0, Match: p, FileHash: fm.Hash})
-			if len(hits) >= limit {
+			matches = append(matches, pathMatch{
+				hit:   SearchHit{Path: p, Line: 0, Match: p, FileHash: fm.Hash},
+				score: score,
+			})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].hit.Path < matches[j].hit.Path
+	})
+	hits := make([]SearchHit, 0, limit)
+	for _, m := range matches {
+		if len(hits) >= limit {
+			break
+		}
+		hits = append(hits, m.hit)
+	}
+	return SearchResult{
+		Hits:         hits,
+		FilesMatched: len(matches),
+		Truncated:    len(hits) < len(matches),
+	}
+}
+
+// defKeywords are language-agnostic prefixes that introduce a definition, used
+// only as a ranking signal (not for correctness). It spans Go, JS/TS, PHP,
+// Python, Ruby, Rust, Java/C#, Perl, and more.
+var defKeywords = []string{
+	"func", "function", "fn", "def", "sub", "proc", "method",
+	"type", "class", "interface", "struct", "enum", "trait", "impl",
+	"record", "object", "module", "namespace", "package",
+	"const", "var", "let",
+}
+
+// defModifiers are access/qualifier keywords that can precede a definition keyword
+// (PHP/Java/C#/TS/Rust); stripping them lets "public function foo", "export const
+// x", or "async function y" still read as a definition.
+var defModifiers = map[string]bool{
+	"public": true, "private": true, "protected": true, "static": true,
+	"abstract": true, "final": true, "async": true, "export": true,
+	"default": true, "pub": true, "open": true, "internal": true,
+	"override": true, "virtual": true, "readonly": true,
+}
+
+// scoreFile assigns a relevance score to a file's matches from cheap,
+// deterministic signals; higher is better.
+func scoreFile(fm repo.FileMeta, hits []SearchHit, q SearchQuery) float64 {
+	// More matches help, with diminishing returns so a huge file can't dominate.
+	score := 2 * math.Log2(1+float64(len(hits)))
+
+	// A name/path match is a strong relevance signal, but only meaningful when
+	// the query is a literal token — a regex isn't a path fragment.
+	if q.Mode == ModeLiteral || q.Mode == ModeWord {
+		token := strings.ToLower(strings.TrimSpace(q.Pattern))
+		if token != "" {
+			switch {
+			case strings.Contains(strings.ToLower(path.Base(fm.Path)), token):
+				score += 10
+			case strings.Contains(strings.ToLower(fm.Path), token):
+				score += 4
+			}
+		}
+		// Identifier-aware: a whole sub-token match ("user" in "user_service.go",
+		// "http" in "HTTPServer.ts") is a stronger signal than an incidental
+		// substring, across any naming convention.
+		if matchesSubtoken(path.Base(fm.Path), q.Pattern) {
+			score += 3
+		}
+	}
+
+	// A definition-shaped match line usually answers "where is this defined?".
+	for _, h := range hits {
+		if looksLikeDefinition(h.Match, q.Pattern, q.Mode) {
+			score += 6
+			break
+		}
+	}
+
+	// Markdown relevance: the query appearing in a heading or front-matter
+	// title/tags line is the prose analogue of a definition — it usually answers
+	// the query, which makes this the core of good Markdown/lessons ranking.
+	if isMarkdown(fm) {
+		for _, h := range hits {
+			if markdownRelevantLine(h.Match) {
+				score += 6
 				break
 			}
 		}
 	}
-	return hits
+
+	// De-emphasize files that are usually not the answer.
+	if fm.Generated || fm.Vendored || isTestPath(fm.Path) {
+		score -= 3
+	}
+	return score
+}
+
+// isMarkdown reports whether a file is Markdown, by detected language or
+// extension (covering .md, .markdown, .mdx).
+func isMarkdown(fm repo.FileMeta) bool {
+	if fm.Language == "Markdown" {
+		return true
+	}
+	switch strings.ToLower(path.Ext(fm.Path)) {
+	case ".md", ".markdown", ".mdx":
+		return true
+	}
+	return false
+}
+
+// matchesSubtoken reports whether every sub-token of the query token appears as a
+// whole sub-token of the file's basename.
+func matchesSubtoken(basename, token string) bool {
+	qt := SplitIdentifier(token)
+	if len(qt) == 0 {
+		return false
+	}
+	bt := SplitIdentifier(basename)
+	set := make(map[string]struct{}, len(bt))
+	for _, t := range bt {
+		set[t] = struct{}{}
+	}
+	for _, t := range qt {
+		if _, ok := set[t]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// frontMatterKeys are high-signal YAML/TOML front-matter fields common in doc and
+// lesson systems; a match on one of these lines is treated like a heading match.
+var frontMatterKeys = []string{
+	"title:", "tags:", "description:", "summary:",
+	"keywords:", "name:", "category:", "aliases:",
+}
+
+// markdownRelevantLine reports whether a matched line is a Markdown heading or a
+// front-matter field — the high-signal locations in a doc.
+func markdownRelevantLine(line string) bool {
+	if _, ok := markdownHeading([]byte(line)); ok {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(line))
+	for _, k := range frontMatterKeys {
+		if strings.HasPrefix(lower, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// annotateSections fills SearchHit.Section with the nearest enclosing Markdown
+// heading for each hit in a Markdown file; it is a no-op for other files. It
+// tracks fenced code blocks (so a '#' comment inside ```/~~~ is not mistaken for a
+// heading) and recognizes both ATX (# Heading) and setext (underlined with ===)
+// headings. This lets a result locate itself within a document, which matters for
+// searching Markdown lesson corpora.
+func annotateSections(fm repo.FileMeta, fc repo.FileContent, hits []SearchHit) {
+	if !isMarkdown(fm) || len(hits) == 0 {
+		return
+	}
+	offsets := fc.LineOffsets
+	if offsets == nil {
+		offsets = repo.LineOffsets(fc.Bytes)
+	}
+	type heading struct {
+		line int
+		text string
+	}
+	var headings []heading
+	inFence := false
+	var fenceChar byte
+	fenceLen := 0
+	prevText := ""
+	prevWasText := false
+	for i := 0; i < len(offsets); i++ {
+		raw := lineAt(fc.Bytes, offsets, i)
+		trimmed := strings.TrimSpace(string(raw))
+		if ch, n, rest, ok := fenceMarker(trimmed); ok {
+			switch {
+			case !inFence:
+				inFence, fenceChar, fenceLen = true, ch, n
+			case ch == fenceChar && n >= fenceLen && rest == "":
+				// A closing fence must use the same character, be at least as long,
+				// and carry no info string; a mismatched inner fence is content.
+				inFence = false
+			}
+			prevWasText = false
+			continue
+		}
+		if inFence {
+			prevWasText = false
+			continue
+		}
+		if text, ok := markdownHeading(raw); ok {
+			headings = append(headings, heading{line: i + 1, text: text})
+			prevWasText = false
+			continue
+		}
+		// Setext H1: a line of only '=' directly under a non-blank text line. The
+		// heading is attributed to the text line above (1-based line number i).
+		if prevWasText && isSetextUnderline(trimmed) {
+			headings = append(headings, heading{line: i, text: prevText})
+			prevWasText = false
+			continue
+		}
+		if trimmed == "" {
+			prevWasText = false
+		} else {
+			prevText, prevWasText = trimmed, true
+		}
+	}
+	if len(headings) == 0 {
+		return
+	}
+	sort.Slice(headings, func(i, j int) bool { return headings[i].line < headings[j].line })
+	for hi := range hits {
+		// The nearest heading strictly above the hit's line.
+		idx := sort.Search(len(headings), func(k int) bool { return headings[k].line >= hits[hi].Line })
+		if idx > 0 {
+			hits[hi].Section = headings[idx-1].text
+		}
+	}
+}
+
+// fenceMarker parses a code-fence line: a run of at least three '`' or '~'. It
+// returns the fence character, the run length, the trimmed remainder after the
+// run (an info string on an opening fence; required empty for a closing fence),
+// and whether the line is a fence at all.
+func fenceMarker(trimmed string) (ch byte, runLen int, rest string, ok bool) {
+	if trimmed == "" || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return 0, 0, "", false
+	}
+	c := trimmed[0]
+	n := 0
+	for n < len(trimmed) && trimmed[n] == c {
+		n++
+	}
+	if n < 3 {
+		return 0, 0, "", false
+	}
+	return c, n, strings.TrimSpace(trimmed[n:]), true
+}
+
+// isSetextUnderline reports whether a trimmed line is a setext H1 underline (only
+// '=' characters). '-' underlines are intentionally not recognized to avoid
+// ambiguity with thematic breaks and YAML front-matter fences.
+func isSetextUnderline(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] != '=' {
+			return false
+		}
+	}
+	return true
+}
+
+// markdownHeading returns the text of an ATX heading line ("## Title" -> "Title")
+// and whether the line is one, following CommonMark: at most 3 spaces of
+// indentation, 1–6 leading '#', and a required space/tab (or end of line) after
+// the '#' run. An optional closing '#' run is stripped. It does not track fenced
+// code blocks itself — annotateSections handles that.
+func markdownHeading(line []byte) (string, bool) {
+	s := string(line)
+	indent := 0
+	for indent < len(s) && s[indent] == ' ' {
+		indent++
+	}
+	if indent >= 4 { // 4+ spaces is an indented code block, not a heading
+		return "", false
+	}
+	s = s[indent:]
+	if s == "" || s[0] != '#' {
+		return "", false
+	}
+	i := 0
+	for i < len(s) && s[i] == '#' {
+		i++
+	}
+	if i > 6 {
+		return "", false
+	}
+	if i < len(s) && s[i] != ' ' && s[i] != '\t' {
+		return "", false // CommonMark requires whitespace after the '#' run
+	}
+	rest := strings.TrimRight(s[i:], " \t")
+	// Strip an optional closing '#' run, but only when it is whitespace-separated
+	// from the text — otherwise the '#' chars are literal ("# C#" -> "C#").
+	end := len(rest)
+	h := end
+	for h > 0 && rest[h-1] == '#' {
+		h--
+	}
+	if h < end && h > 0 && (rest[h-1] == ' ' || rest[h-1] == '\t') {
+		rest = rest[:h]
+	}
+	text := strings.TrimSpace(rest)
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
+// looksLikeDefinition reports whether a matched line appears to define the
+// queried token — a keyword-led declaration, or the token bound with = or :. It
+// is a deliberately conservative ranking hint; regex queries are skipped since
+// there is no single token to reason about.
+func looksLikeDefinition(line, token string, mode SearchMode) bool {
+	if mode == ModeRegex {
+		return false
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	lt := strings.ToLower(token)
+	// Strip leading access/qualifier modifiers so "public function foo", "export
+	// const x", "async function y" still resolve to their definition keyword.
+	kwLine := stripDefModifiers(lower)
+	for _, kw := range defKeywords {
+		if strings.HasPrefix(kwLine, kw+" ") && strings.Contains(lower, lt) {
+			return true
+		}
+	}
+	// Assignment or field/key binding: "<token> =", "<token> :=", "<token>:".
+	if strings.HasPrefix(lower, lt) {
+		rest := strings.TrimSpace(trimmed[len(lt):])
+		if strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, ":") {
+			return true
+		}
+	}
+	return false
+}
+
+// stripDefModifiers removes a leading run of access/qualifier modifier words from
+// an already-lowercased line.
+func stripDefModifiers(lower string) string {
+	for {
+		sp := strings.IndexByte(lower, ' ')
+		if sp <= 0 {
+			return lower
+		}
+		if defModifiers[lower[:sp]] {
+			lower = strings.TrimLeft(lower[sp+1:], " ")
+			continue
+		}
+		return lower
+	}
+}
+
+// isTestPath reports whether a path looks like test code, by common naming and
+// directory conventions across ecosystems.
+func isTestPath(p string) bool {
+	lp := strings.ToLower(p)
+	switch {
+	case strings.Contains(lp, "_test."),
+		strings.Contains(lp, ".test."),
+		strings.Contains(lp, ".spec."),
+		strings.Contains(lp, "_spec."),
+		strings.Contains(lp, "__tests__/"),
+		strings.HasPrefix(lp, "test/"),
+		strings.HasPrefix(lp, "tests/"),
+		strings.Contains(lp, "/test/"),
+		strings.Contains(lp, "/tests/"):
+		return true
+	}
+	return false
 }
 
 // searchFile scans a file's bytes line by line for matches with context. It

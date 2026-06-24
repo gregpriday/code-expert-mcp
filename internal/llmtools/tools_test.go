@@ -150,6 +150,35 @@ func TestExecuteUnknownTool(t *testing.T) {
 	}
 }
 
+// TestRepoSearchEmitsMarkdownSection confirms the Markdown section breadcrumb
+// reaches the model through the repo_search tool output, not just the engine.
+func TestRepoSearchEmitsMarkdownSection(t *testing.T) {
+	dir := t.TempDir()
+	md := "# Guide\n\n## Caching\n\nthe cache is fast here\n"
+	if err := os.WriteFile(filepath.Join(dir, "guide.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	root, err := repo.ResolveRoot(repo.DefaultRoot(dir), cfg.Repository.FollowSymlinks, nil)
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	snap, err := repo.BuildSnapshot(context.Background(), root, cfg.Repository)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	reg := New(Options{Snapshot: snap, Evidence: evidence.NewStore(snap.ID()), Budget: budget.New(budget.Limits{}), Config: cfg})
+	m := execJSON(t, reg, "repo_search", `{"query":"fast"}`)
+	hits, ok := m["hits"].([]any)
+	if !ok || len(hits) == 0 {
+		t.Fatalf("expected hits, got %v", m["hits"])
+	}
+	h0, _ := hits[0].(map[string]any)
+	if h0["section"] != "Caching" {
+		t.Errorf("repo_search should emit section %q, got %v", "Caching", h0["section"])
+	}
+}
+
 func toString(v any) string {
 	s, _ := v.(string)
 	return s

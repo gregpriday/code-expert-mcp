@@ -184,6 +184,12 @@ type RetrievalConfig struct {
 	InitialContextTokens int    `toml:"initial_context_tokens"`
 	SearchResultLimit    int    `toml:"search_result_limit"`
 	UseRipgrep           bool   `toml:"use_ripgrep"`
+	// TrigramFilter enables the in-memory trigram candidate pre-filter, which
+	// narrows the files an exact search scans without changing results.
+	TrigramFilter bool `toml:"trigram_filter"`
+	// TrigramMaxPerFile bounds the distinct trigrams indexed per file before that
+	// file becomes an unconditional candidate; 0 uses the engine default.
+	TrigramMaxPerFile int `toml:"trigram_max_per_file"`
 	// MaxBytesRead is the default per-run cap on bytes read by the repo_read tool;
 	// 0 means no limit. The review's frozen diff and head-read tools serve
 	// already-bounded snapshot content and are not charged against it. A per-request

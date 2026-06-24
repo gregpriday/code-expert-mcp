@@ -64,7 +64,9 @@ func Defaults() Config {
 			InitialContextTokens: 14000,
 			SearchResultLimit:    100,
 			UseRipgrep:           true,
-			MaxBytesRead:         0, // 0 = no default cap; per-request budget may set one
+			TrigramFilter:        true,
+			TrigramMaxPerFile:    1 << 18, // ~262k distinct trigrams; bigger/high-entropy files degrade to always-candidate
+			MaxBytesRead:         0,       // 0 = no default cap; per-request budget may set one
 		},
 		Embeddings: EmbeddingsConfig{
 			Enabled:       false,

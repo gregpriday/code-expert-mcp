@@ -19,14 +19,15 @@ func (r *Registry) registerCommon() {
 	})
 	r.register(tool{
 		name:        "repo_search",
-		description: "Search the repository. mode: literal (substring), word (whole word), regex (RE2), or path (filename/dir). Returns matches with file, line, and an evidence_id. Prefer this for identifiers, error strings, and config keys.",
+		description: "Search the repository, returning matches ranked by relevance (name/path match, definition-shaped lines, and match frequency). mode: literal (substring), word (whole word), regex (RE2), or path (filename/dir). Returns hits with file, line, and an evidence_id, plus files_matched and a truncated flag so you can narrow when results are capped. Markdown hits also carry the enclosing section heading. Prefer this for identifiers, error strings, and config keys.",
 		parameters: objSchema(map[string]any{
-			"query":         strProp("The search query."),
-			"mode":          enumProp("How to interpret the query.", "literal", "word", "regex", "path"),
-			"include":       arrProp("Optional glob patterns to restrict the search."),
-			"exclude":       arrProp("Optional glob patterns to exclude."),
-			"max_results":   intProp("Maximum hits to return (default 50)."),
-			"context_lines": intProp("Lines of surrounding context per hit (default 2)."),
+			"query":            strProp("The search query."),
+			"mode":             enumProp("How to interpret the query.", "literal", "word", "regex", "path"),
+			"include":          arrProp("Optional glob patterns to restrict the search."),
+			"exclude":          arrProp("Optional glob patterns to exclude."),
+			"max_results":      intProp("Maximum hits to return (default 50)."),
+			"context_lines":    intProp("Lines of surrounding context per hit (default 2)."),
+			"case_insensitive": boolProp("Match case-insensitively (default false)."),
 		}, "query"),
 		handler: r.handleSearch,
 	})
@@ -125,12 +126,13 @@ func (r *Registry) handleManifest(ctx context.Context, _ json.RawMessage) (any, 
 }
 
 type searchParams struct {
-	Query        string   `json:"query"`
-	Mode         string   `json:"mode"`
-	Include      []string `json:"include"`
-	Exclude      []string `json:"exclude"`
-	MaxResults   int      `json:"max_results"`
-	ContextLines int      `json:"context_lines"`
+	Query           string   `json:"query"`
+	Mode            string   `json:"mode"`
+	Include         []string `json:"include"`
+	Exclude         []string `json:"exclude"`
+	MaxResults      int      `json:"max_results"`
+	ContextLines    int      `json:"context_lines"`
+	CaseInsensitive bool     `json:"case_insensitive"`
 }
 
 func (r *Registry) handleSearch(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -150,27 +152,34 @@ func (r *Registry) handleSearch(ctx context.Context, raw json.RawMessage) (any, 
 	if mr == 0 {
 		mr = 50
 	}
-	hits, err := r.lex.Search(ctx, index.SearchQuery{
+	res, err := r.lex.SearchDetailed(ctx, index.SearchQuery{
 		Pattern: p.Query, Mode: mode, Include: p.Include, Exclude: p.Exclude,
-		MaxResults: mr, ContextLines: cl,
+		MaxResults: mr, ContextLines: cl, CaseInsensitive: p.CaseInsensitive,
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]map[string]any, 0, len(hits))
-	for _, h := range hits {
+	out := make([]map[string]any, 0, len(res.Hits))
+	for _, h := range res.Hits {
 		ev := r.evid.Add(schema.EvidenceRecord{
 			Kind: schema.EvidenceKindSearch, Path: h.Path, StartLine: h.Line, EndLine: h.Line,
 			BlobHash: h.FileHash, Summary: h.Match,
 			Provenance: schema.Provenance{Tool: "repo_search", Query: p.Query, Untrusted: true},
 		})
-		out = append(out, map[string]any{
+		m := map[string]any{
 			"path": h.Path, "line": h.Line, "match": h.Match,
 			"context_before": h.ContextBefore, "context_after": h.ContextAfter,
 			"evidence_id": ev.ID,
-		})
+		}
+		if h.Section != "" {
+			m["section"] = h.Section // enclosing Markdown heading, when applicable
+		}
+		out = append(out, m)
 	}
-	return map[string]any{"snapshot_id": r.snap.ID(), "count": len(out), "hits": out, "note": untrustedNote}, nil
+	return map[string]any{
+		"snapshot_id": r.snap.ID(), "count": len(out), "files_matched": res.FilesMatched,
+		"truncated": res.Truncated, "hits": out, "note": untrustedNote,
+	}, nil
 }
 
 type readParams struct {

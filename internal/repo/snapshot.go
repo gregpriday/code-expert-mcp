@@ -128,10 +128,12 @@ func (s *Snapshot) ReadFile(_ context.Context, path string) (FileContent, error)
 	// files are returned uncached rather than growing memory without bound. The
 	// charge counts content bytes only (the small per-line offset table is not
 	// accounted), so the cap is an approximate ceiling, not an exact one.
+	// Charge by the normalized content actually retained (fc.Bytes), not the raw
+	// read length, so the budget reflects what is really held in memory.
 	cap := s.cfg.MaxTotalSnapshotBytes
-	if cap <= 0 || s.contentsBytes+int64(len(data)) <= cap {
+	if cap <= 0 || s.contentsBytes+int64(len(fc.Bytes)) <= cap {
 		s.contents[path] = fc
-		s.contentsBytes += int64(len(data))
+		s.contentsBytes += int64(len(fc.Bytes))
 	}
 	s.mu.Unlock()
 	return fc, nil
@@ -325,8 +327,11 @@ func countLines(b []byte) int {
 }
 
 // newFileContent wraps file bytes with metadata and a precomputed line-offset
-// table, the single constructor used by all snapshot read paths.
+// table, the single constructor used by all snapshot read paths. It normalizes
+// content to UTF-8 here so every consumer (search, reads, the trigram index) sees
+// one consistent byte space; valid UTF-8 is returned unchanged.
 func newFileContent(meta FileMeta, data []byte) FileContent {
+	data = normalizeToUTF8(data)
 	return FileContent{
 		Meta:        meta,
 		Bytes:       data,

@@ -34,6 +34,9 @@ func enumProp(desc string, values ...string) map[string]any {
 func arrProp(desc string) map[string]any {
 	return map[string]any{"type": "array", "description": desc, "items": map[string]any{"type": "string"}}
 }
+func boolProp(desc string) map[string]any {
+	return map[string]any{"type": "boolean", "description": desc}
+}
 
 func decode(raw json.RawMessage, v any) error {
 	if len(raw) == 0 {

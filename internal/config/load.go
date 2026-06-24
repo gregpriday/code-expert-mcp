@@ -146,8 +146,8 @@ func (c Config) String() string {
 	// scout/verifier are the resolved small/large tiers the engine uses.
 	fmt.Fprintf(&b, "[models]\nsmall (scout) = %q\nlarge (verifier) = %q\nplanner = %q\nreviewer = %q\nmax_output_tokens = %d\n\n",
 		c.Models.Scout, c.Models.Verifier, c.Models.Planner, c.Models.Reviewer, c.Models.MaxOutputTokens)
-	fmt.Fprintf(&b, "[retrieval]\nlexical = %v\nsymbols = %v\nsummaries = %q\nembeddings = %v\nmax_files_per_run = %d\nmax_context_tokens = %d\n\n",
-		c.Retrieval.Lexical, c.Retrieval.Symbols, c.Retrieval.Summaries, c.Retrieval.Embeddings, c.Retrieval.MaxFilesPerRun, c.Retrieval.MaxContextTokens)
+	fmt.Fprintf(&b, "[retrieval]\nlexical = %v\nsymbols = %v\nsummaries = %q\nembeddings = %v\ntrigram_filter = %v\ntrigram_max_per_file = %d\nmax_files_per_run = %d\nmax_context_tokens = %d\n\n",
+		c.Retrieval.Lexical, c.Retrieval.Symbols, c.Retrieval.Summaries, c.Retrieval.Embeddings, c.Retrieval.TrigramFilter, c.Retrieval.TrigramMaxPerFile, c.Retrieval.MaxFilesPerRun, c.Retrieval.MaxContextTokens)
 	embKeyPresent := c.Embeddings.APIKey != ""
 	fmt.Fprintf(&b, "[embeddings]\nenabled = %v\nprovider = %q\nmodel = %q\nbase_url = %q\napi_key_env = %q\napi_key_present = %v\nchunk_tokens = %d\noverlap_tokens = %d\nmax_chunks = %d\n\n",
 		c.Embeddings.Enabled, c.Embeddings.Provider, c.Embeddings.Model, c.Embeddings.BaseURL, c.Embeddings.APIKeyEnv, embKeyPresent, c.Embeddings.ChunkTokens, c.Embeddings.OverlapTokens, c.Embeddings.MaxChunks)
