@@ -93,7 +93,11 @@ func New(opts Options) *Registry {
 	if r.review != nil {
 		r.registerReview()
 	}
-	if r.cfg.Grounding.Enabled && r.prov != nil {
+	// Advertise the grounding tool only when it can actually run: enabled in
+	// config, a provider is present, and that provider supports the built-in web
+	// search (the responses dialect). Otherwise every call would burn budget and
+	// fail, so skip registration quietly.
+	if r.cfg.Grounding.Enabled && r.prov != nil && r.prov.Capabilities(context.Background()).SupportsWebSearch {
 		r.registerGrounding()
 	}
 	return r
