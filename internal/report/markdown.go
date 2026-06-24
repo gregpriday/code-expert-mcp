@@ -555,10 +555,33 @@ func writePlanStep(b *strings.Builder, s schema.PlanStep) {
 // from each cause's Verified flag and list their reasoning and cited evidence
 // IDs when present.
 func writeHelpBody(b *strings.Builder, h schema.HelpReport) {
+	if h.DirectAnswer != "" {
+		b.WriteString("## Answer\n\n")
+		b.WriteString(h.DirectAnswer)
+		b.WriteString("\n\n")
+	}
+	if h.RecommendedNextAction != "" {
+		fmt.Fprintf(b, "**Recommended next action:** %s\n\n", h.RecommendedNextAction)
+	}
+
 	if h.ProblemRestatement != "" {
 		b.WriteString("## Problem restatement\n\n")
 		b.WriteString(h.ProblemRestatement)
 		b.WriteString("\n\n")
+	}
+
+	if len(h.VerifiedFacts) > 0 {
+		b.WriteString("## Verified facts\n\n")
+		for _, s := range h.VerifiedFacts {
+			writeEvidenceStatement(b, s)
+		}
+		b.WriteString("\n")
+	}
+
+	if len(h.Inferences) > 0 {
+		b.WriteString("## Inferences\n\n")
+		writeBullets(b, h.Inferences)
+		b.WriteString("\n")
 	}
 
 	if len(h.ObservedEvidence) > 0 {

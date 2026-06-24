@@ -239,28 +239,6 @@ func detectCycle(steps []schema.PlanStep) string {
 	return ""
 }
 
-// validateHelp performs light validation, returning limitations for bad citations.
-func validateHelp(ctx context.Context, help *schema.HelpReport, snap *repo.Snapshot, evid *evidence.Store) []schema.Limitation {
-	var lims []schema.Limitation
-	for i := range help.LikelyCauses {
-		valid := help.LikelyCauses[i].EvidenceIDs[:0]
-		for _, eid := range help.LikelyCauses[i].EvidenceIDs {
-			if evid.Has(eid) {
-				valid = append(valid, eid)
-			}
-		}
-		// If a cause claimed verified but cites no valid evidence, downgrade it.
-		if help.LikelyCauses[i].Verified && len(valid) == 0 {
-			help.LikelyCauses[i].Verified = false
-		}
-		help.LikelyCauses[i].EvidenceIDs = valid
-	}
-	if strings.TrimSpace(help.ProblemRestatement) == "" {
-		lims = append(lims, schema.Limitation{Stage: "synthesis", Message: "help report missing a problem restatement"})
-	}
-	return lims
-}
-
 // repairPlan sends the validation issues back for one bounded repair attempt.
 func (e *Engine) repairPlan(ctx context.Context, sess *Session, criteria []string, snap *repo.Snapshot, evid *evidence.Store, issues []string) (*schema.ImplementationPlan, error) {
 	out := inferSchema[schema.ImplementationPlan]("implementation_plan")

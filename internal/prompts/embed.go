@@ -22,6 +22,7 @@ const (
 	CommonSystem     = "common-system"
 	PlanExplore      = "plan-explore"
 	PlanFinalize     = "plan-finalize"
+	HelpExplore      = "help-explore"
 	HelpFinalize     = "help-finalize"
 	ReviewDiffLocal  = "review-diff-local"
 	ReviewContext    = "review-context"
