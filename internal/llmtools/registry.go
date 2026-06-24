@@ -137,6 +137,15 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) string {
 	if mErr != nil {
 		return errorResult("failed to encode result: %v", mErr)
 	}
+	// Charge the repository content this tool surfaced to the model against the
+	// byte budget. Every content-returning tool (read, search, symbol, references,
+	// history, diff) is accounted here uniformly; repo_read additionally charges
+	// the file-count budget in its own handler.
+	if r.tracker != nil {
+		if err := r.tracker.ChargeBytes(int64(len(b))); err != nil {
+			return errorResult("%s", err.Error())
+		}
+	}
 	return string(b)
 }
 

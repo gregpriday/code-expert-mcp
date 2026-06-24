@@ -19,6 +19,11 @@ type FileMeta struct {
 	Generated bool        `json:"generated"`
 	Vendored  bool        `json:"vendored"`
 	Language  string      `json:"language"`
+	// ContentFrozen is true when Hash is a content hash of the file's frozen bytes
+	// (the in-budget case), so a later read can be verified byte-for-byte against
+	// it. When false (oversized or over the snapshot byte budget), Hash is a
+	// synthetic path+size digest and a read is verified by size only.
+	ContentFrozen bool `json:"-"`
 }
 
 // FileContent is a file's bytes plus metadata, returned by snapshot reads.

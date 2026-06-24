@@ -7,6 +7,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 
@@ -97,7 +98,12 @@ func (s *Session) AddUser(content string) {
 	s.messages = append(s.messages, provider.Message{Role: provider.RoleUser, Content: content})
 }
 
-// generate performs one provider call, charging budget and recording usage.
+// generate performs one provider call, charging budget and recording usage. It
+// enforces the run's hard ceilings: the model-call count, the per-call context
+// token budget (estimated before the call), and the output-token cap (from the
+// tracker, which already reflects the down-clamped per-request override). A
+// context deadline that fires mid-call surfaces as a budget-exhausted (timeout)
+// error so the workflow can finish with a truthful partial result.
 func (s *Session) generate(ctx context.Context, req provider.GenerationRequest) (provider.GenerationResponse, error) {
 	if s.tracker != nil {
 		if err := s.tracker.ChargeModelCall(); err != nil {
@@ -108,16 +114,62 @@ func (s *Session) generate(ctx context.Context, req provider.GenerationRequest) 
 	req.Instructions = s.system
 	req.ReasoningEffort = s.reasoning
 	if req.MaxOutputTokens == 0 {
-		req.MaxOutputTokens = s.eng.Cfg.Models.MaxOutputTokens
+		req.MaxOutputTokens = s.outputTokenLimit()
+	}
+	if s.tracker != nil {
+		if maxCtx := s.tracker.MaxContextTokens(); maxCtx > 0 {
+			if est := estimateRequestTokens(s.system, req.Input, req.Tools); est > maxCtx {
+				return provider.GenerationResponse{}, schema.NewError(schema.CodeBudgetExhausted,
+					"estimated request context (~%d tokens) exceeds the configured limit of %d; stopping before the call", est, maxCtx)
+			}
+		}
 	}
 	resp, err := s.eng.Provider.Generate(ctx, req)
 	if err != nil {
+		// A context deadline/cancellation that interrupts the call should not look
+		// like a provider failure: a deadline is the run's own time budget, a
+		// cancellation is the caller aborting.
+		if ce := ctx.Err(); ce != nil {
+			if errors.Is(ce, context.DeadlineExceeded) {
+				return resp, schema.NewError(schema.CodeBudgetExhausted, "time budget exhausted during a model call")
+			}
+			return resp, schema.NewError(schema.CodeCancelled, "run cancelled")
+		}
 		return resp, err
 	}
 	if s.usage != nil {
 		s.usage.add(s.model, resp)
 	}
 	return resp, nil
+}
+
+// outputTokenLimit is the per-call output ceiling: the tracker's value (config or
+// the down-clamped per-request override) when set, else the global model default.
+func (s *Session) outputTokenLimit() int {
+	if s.tracker != nil {
+		if n := s.tracker.MaxOutputTokens(); n > 0 {
+			return n
+		}
+	}
+	return s.eng.Cfg.Models.MaxOutputTokens
+}
+
+// estimateRequestTokens is a deterministic, provider-neutral upper estimate of a
+// request's prompt size, used only to enforce the context-token ceiling. It uses
+// the standard ~4-bytes-per-token heuristic over the system prompt, every message
+// (including tool results), and the advertised tool schemas.
+func estimateRequestTokens(system string, msgs []provider.Message, tools []provider.FunctionTool) int {
+	chars := len(system)
+	for _, m := range msgs {
+		chars += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			chars += len(tc.Name) + len(tc.Arguments)
+		}
+	}
+	for _, t := range tools {
+		chars += len(t.Name) + len(t.Description) + len(t.Parameters)
+	}
+	return chars / 4
 }
 
 // RunToolLoop runs bounded exploration: the model may call read-only tools for

@@ -74,6 +74,10 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 	profile := resolveProfile(req.Profile, e.Cfg.Plan.DefaultProfile)
 	limits := resolveLimits(e.Cfg, profile, req.Budget, req.Retrieval)
 	tracker := budget.New(limits)
+	// Apply the time budget as a real context deadline so a single long provider
+	// call cannot run past it (the round-boundary poll alone could not bound it).
+	ctx, cancel := tracker.Deadline(ctx)
+	defer cancel()
 	usage := &usageAccumulator{}
 	evid := evidence.NewStore(snap.ID())
 
@@ -116,24 +120,42 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 
 	var result schema.PlanResult
 	var limitations []schema.Limitation
+	var synthErr error
 	if mode == schema.PlanModeHelp {
 		help, lims, herr := e.synthesizeHelp(ctx, sess, snap, evid)
 		if herr != nil {
-			return schema.PlanResult{}, herr
+			synthErr = herr
+		} else {
+			result.Help = help
+			limitations = lims
 		}
-		result.Help = help
-		limitations = lims
 	} else {
 		plan, lims, perr := e.synthesizePlan(ctx, sess, snap, evid)
 		if perr != nil {
-			return schema.PlanResult{}, perr
+			synthErr = perr
+		} else {
+			result.Plan = plan
+			limitations = lims
 		}
-		result.Plan = plan
-		limitations = lims
+	}
+	// A synthesis failure caused by the time or call budget is not a hard error:
+	// return a truthful partial result (no plan/help) with the reason recorded.
+	// Any other failure (bad output, provider auth, caller cancel) still aborts.
+	if synthErr != nil {
+		if !isBudgetTimeout(synthErr) {
+			return schema.PlanResult{}, synthErr
+		}
+		limitations = append(limitations, schema.Limitation{Stage: "synthesis",
+			Message: "synthesis did not complete within the budget: " + schema.AsToolError(synthErr).Message})
 	}
 
 	progress("validation", "assembling result")
 	status := schema.StatusComplete
+	// An incomplete synthesis (budget/timeout) is a partial result even if the
+	// tracker's own counters did not trip (e.g. a context-token overflow).
+	if synthErr != nil || result.Plan == nil && result.Help == nil {
+		status = schema.StatusPartial
+	}
 	if tracker.TimedOut() {
 		status = schema.StatusPartial
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: "time budget reached before completion"})
@@ -144,6 +166,10 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 	}
 	if snap.Truncated() {
 		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "snapshot truncated at the configured byte limit; some files were not fully indexed"})
+	}
+	if snap.Stale() {
+		status = schema.StatusStale
+		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "the working tree changed after the snapshot was frozen; results may mix repository states — rerun to refreeze"})
 	}
 
 	result.RunID = runID

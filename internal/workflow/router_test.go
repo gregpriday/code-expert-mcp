@@ -69,6 +69,41 @@ func TestResolveLimitsFromConfig(t *testing.T) {
 	}
 }
 
+// TestResolveLimitsClampsDownOnly proves a per-request budget can only LOWER a
+// limit, never raise it above the configured safety maximum (the core fix for the
+// router accepting limit-raising overrides).
+func TestResolveLimitsClampsDownOnly(t *testing.T) {
+	cfg := config.Defaults() // deep ceiling = 12 model calls, request timeout = 30m
+
+	// Asking for MORE than the configured ceiling is clamped down.
+	l := resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 9999}, schema.RetrievalOpts{})
+	if l.MaxModelCalls != 12 {
+		t.Errorf("MaxModelCalls = %d, want clamped to 12", l.MaxModelCalls)
+	}
+	// Asking for LESS is honored.
+	l = resolveLimits(cfg, schema.ProfileDeep, schema.Budget{MaxModelCalls: 2}, schema.RetrievalOpts{})
+	if l.MaxModelCalls != 2 {
+		t.Errorf("MaxModelCalls = %d, want 2 (lowered)", l.MaxModelCalls)
+	}
+	// Timeout is clamped to the configured request timeout.
+	l = resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{TimeoutSeconds: 99 * 3600}, schema.RetrievalOpts{})
+	if l.Timeout != 30*time.Minute {
+		t.Errorf("Timeout = %v, want clamped to 30m", l.Timeout)
+	}
+	// A configured byte ceiling clamps an over-large request.
+	cfg.Retrieval.MaxBytesRead = 1000
+	l = resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{MaxBytesRead: 5000}, schema.RetrievalOpts{})
+	if l.MaxBytesRead != 1000 {
+		t.Errorf("MaxBytesRead = %d, want clamped to 1000", l.MaxBytesRead)
+	}
+	// A retrieval override folds into the equivalent budget field and is clamped.
+	cfg.Retrieval.MaxFileReads = 80
+	l = resolveLimits(cfg, schema.ProfileBalanced, schema.Budget{}, schema.RetrievalOpts{MaxFileReads: 9999})
+	if l.MaxFilesRead != 80 {
+		t.Errorf("MaxFilesRead via retrieval = %d, want clamped to 80", l.MaxFilesRead)
+	}
+}
+
 // TestRoutingSelectsTier proves [routing] drives per-stage model selection,
 // overriding the profile/complexity escalation, and that an unset stage falls
 // back to the legacy behavior.

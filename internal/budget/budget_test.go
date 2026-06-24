@@ -30,6 +30,32 @@ func TestExhaustedRecordsFirstReason(t *testing.T) {
 	}
 }
 
+func TestChargeBytesAndFileSeparately(t *testing.T) {
+	tr := New(Limits{MaxBytesRead: 100, MaxFilesRead: 2})
+	if err := tr.ChargeBytes(60); err != nil {
+		t.Fatalf("first 60 bytes should fit: %v", err)
+	}
+	if err := tr.ChargeBytes(0); err != nil {
+		t.Fatalf("a zero-byte charge is a no-op: %v", err)
+	}
+	if err := tr.ChargeBytes(60); err == nil {
+		t.Error("120 bytes should exhaust the 100-byte budget")
+	}
+	// File-count budget is independent of the byte budget.
+	if err := tr.ChargeFile(); err != nil {
+		t.Fatalf("first file should fit: %v", err)
+	}
+	if err := tr.ChargeFile(); err != nil {
+		t.Fatalf("second file should fit: %v", err)
+	}
+	if err := tr.ChargeFile(); err == nil {
+		t.Error("third file should exhaust the 2-file budget")
+	}
+	if got := tr.Snapshot(); got.BytesRead != 60 || got.FilesRead != 2 {
+		t.Errorf("usage = %d bytes / %d files, want 60 / 2", got.BytesRead, got.FilesRead)
+	}
+}
+
 func TestTimedOutIsSeparateFromExhausted(t *testing.T) {
 	tr := New(Limits{Timeout: time.Nanosecond})
 	time.Sleep(time.Millisecond)

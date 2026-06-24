@@ -119,6 +119,33 @@ func TestHelpEndToEnd(t *testing.T) {
 	}
 }
 
+// TestContextTokenLimitYieldsPartial proves the context-token ceiling is actually
+// enforced: an absurdly low limit makes every model call exceed it, and the run
+// returns a truthful partial result (not a hard error, not a false "complete").
+func TestContextTokenLimitYieldsPartial(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	cfg := config.Defaults()
+	cfg.Cache.Enabled = false
+	cfg.Retrieval.MaxContextTokens = 1 // every request exceeds one token
+	eng := &Engine{Cfg: cfg, Provider: &fakeProvider{existingFile: rel}, Log: telemetry.Nop()}
+
+	res, err := eng.Plan(context.Background(), schema.PlanRequest{
+		Root: dir, Instructions: "Add a greeting flag to main.go",
+	}, RunOptions{})
+	if err != nil {
+		t.Fatalf("a context-budget overflow must yield a partial result, not an error: %v", err)
+	}
+	if res.Status != schema.StatusPartial {
+		t.Errorf("status = %s, want partial under a 1-token context budget", res.Status)
+	}
+	if res.Plan != nil {
+		t.Error("no plan should be synthesized when every model call is blocked by the context budget")
+	}
+	if len(res.Limitations) == 0 {
+		t.Error("a partial result must carry a limitation explaining why")
+	}
+}
+
 func TestReviewEndToEnd(t *testing.T) {
 	dir, rel := tempGitRepo(t)
 	// Make a working-tree change so there is a diff to review.

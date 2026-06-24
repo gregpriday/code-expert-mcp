@@ -50,6 +50,11 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	profile := resolveProfile(req.Profile, e.Cfg.Review.DefaultProfile)
 	limits := resolveLimits(e.Cfg, profile, req.Budget, req.Retrieval)
 	tracker := budget.New(limits)
+	// Apply the time budget as a real context deadline (see runPlanHelp). The
+	// candidate passes and the verifier soft-fail on budget exhaustion, so a
+	// timeout yields a partial review rather than a hard error.
+	ctx, cancel := tracker.Deadline(ctx)
+	defer cancel()
 	usage := &usageAccumulator{}
 	evid := evidence.NewStore(snap.ID())
 	guidance := e.guidanceList(ctx, snap)
@@ -129,6 +134,10 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 	status := schema.StatusComplete
 	if _, limited := tracker.Exhausted(); tracker.TimedOut() || limited {
 		status = schema.StatusPartial
+	}
+	if rs.Base().Stale() {
+		status = schema.StatusStale
+		limitations = append(limitations, schema.Limitation{Stage: "snapshot", Message: "the working tree changed after the snapshot was frozen; results may mix repository states — rerun to refreeze"})
 	}
 
 	blocking := 0

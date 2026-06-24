@@ -15,6 +15,14 @@ import (
 	"github.com/gregpriday/codeexpert/internal/schema"
 )
 
+// isBudgetTimeout reports whether an error is the run's own budget/time
+// exhaustion (rather than a caller cancellation or a real failure), so callers
+// can convert it into a truthful partial result instead of aborting.
+func isBudgetTimeout(err error) bool {
+	code := schema.AsToolError(err).Code
+	return code == schema.CodeBudgetExhausted || code == schema.CodeProviderTimeout
+}
+
 // newRunID generates a unique run identifier.
 func newRunID(prefix string) string {
 	var b [8]byte

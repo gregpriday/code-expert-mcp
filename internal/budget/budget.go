@@ -83,7 +83,9 @@ func (t *Tracker) ChargeInternalTool() error {
 	return nil
 }
 
-// ChargeFileRead reserves one file read of n bytes.
+// ChargeFileRead reserves one file read of n bytes (both the file-count and the
+// byte budget). Use ChargeFile + ChargeBytes when those two dimensions are
+// accounted at different points.
 func (t *Tracker) ChargeFileRead(n int64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -94,6 +96,33 @@ func (t *Tracker) ChargeFileRead(n int64) error {
 		return t.exhaust("byte read budget (%d) exhausted", t.limits.MaxBytesRead)
 	}
 	t.filesRead++
+	t.bytesRead += n
+	return nil
+}
+
+// ChargeFile reserves one file read against the file-count budget only.
+func (t *Tracker) ChargeFile() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.limits.MaxFilesRead > 0 && t.filesRead >= t.limits.MaxFilesRead {
+		return t.exhaust("file read budget (%d) exhausted", t.limits.MaxFilesRead)
+	}
+	t.filesRead++
+	return nil
+}
+
+// ChargeBytes reserves n bytes against the byte-read budget only. It is how every
+// content-returning tool (read, search, symbol, references, history, diff) is
+// charged for the repository content it surfaces to the model.
+func (t *Tracker) ChargeBytes(n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.limits.MaxBytesRead > 0 && t.bytesRead+n > t.limits.MaxBytesRead {
+		return t.exhaust("byte read budget (%d) exhausted", t.limits.MaxBytesRead)
+	}
 	t.bytesRead += n
 	return nil
 }
