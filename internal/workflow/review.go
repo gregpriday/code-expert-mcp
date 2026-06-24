@@ -9,6 +9,7 @@ import (
 	"github.com/gregpriday/codeexpert/internal/config"
 	"github.com/gregpriday/codeexpert/internal/evidence"
 	"github.com/gregpriday/codeexpert/internal/llmtools"
+	"github.com/gregpriday/codeexpert/internal/prompts"
 	"github.com/gregpriday/codeexpert/internal/repo"
 	"github.com/gregpriday/codeexpert/internal/report"
 	"github.com/gregpriday/codeexpert/internal/schema"
@@ -73,7 +74,7 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 	reviewable := reviewableFiles(manifest, e.Cfg, req.Policy)
 	if len(reviewable) == 0 {
 		return e.assembleReview(ctx, runID, rs, riskMap, nil, nil, evid, tracker, usage,
-			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile), nil
+			[]schema.Limitation{{Stage: "scope", Message: "no reviewable changed files in the target scope"}}, profile, req.Output.IncludeTrace), nil
 	}
 
 	// Enrich the manifest with enclosing changed symbols so the tool-less
@@ -121,13 +122,13 @@ func (e *Engine) Review(ctx context.Context, req schema.ReviewRequest, opts RunO
 		limitations = append(limitations, schema.Limitation{Stage: "budget", Message: reason + "; coverage may be incomplete"})
 	}
 	progress("complete", "done")
-	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile), nil
+	return e.assembleReview(ctx, runID, rs, riskMap, findings, &suppressed, evid, tracker, usage, limitations, profile, req.Output.IncludeTrace), nil
 }
 
 // assembleReview builds the final ReviewResult, coverage, summary, and renders.
 func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.ReviewSnapshot, riskMap []schema.RiskArea,
 	findings []schema.ReviewFinding, suppressed *schema.SuppressionStats, evid *evidence.Store, tracker *budget.Tracker,
-	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile) schema.ReviewResult {
+	usage *usageAccumulator, limitations []schema.Limitation, profile schema.AnalysisProfile, includeTrace bool) schema.ReviewResult {
 
 	manifest := rs.Manifest()
 	coverage := buildCoverage(manifest, e.Cfg, riskMap, findings)
@@ -181,6 +182,8 @@ func (e *Engine) assembleReview(ctx context.Context, runID string, rs *repo.Revi
 	if suppressed != nil {
 		result.Suppressed = *suppressed
 	}
+	e.attachReviewTrace(&result, profile, len(evid.All()),
+		[]string{prompts.CommonSystem, prompts.ReviewDiffLocal, prompts.ReviewContext, prompts.ReviewSpecialist, prompts.ReviewVerify}, includeTrace)
 
 	md := report.ReviewMarkdown(result)
 	result.Markdown = md

@@ -30,6 +30,7 @@ type planHelpInput struct {
 	Profile      schema.AnalysisProfile
 	Retrieval    schema.RetrievalOpts
 	Budget       schema.Budget
+	IncludeTrace bool
 }
 
 // Plan runs the implementation-planning workflow and returns a structured plan.
@@ -44,6 +45,7 @@ func (e *Engine) Plan(ctx context.Context, req schema.PlanRequest, opts RunOptio
 	in := planHelpInput{
 		Root: req.Root, Instructions: req.Instructions, Mode: schema.PlanModePlan,
 		Task: req.Task, Profile: req.Profile, Retrieval: req.Retrieval, Budget: req.Budget,
+		IncludeTrace: req.Output.IncludeTrace,
 	}
 	return e.runPlanHelp(ctx, in, runID, opts)
 }
@@ -169,6 +171,7 @@ func (e *Engine) runPlanHelp(ctx context.Context, req planHelpInput, runID strin
 	result.Evidence = sortedEvidenceRefs(evid.Refs())
 	result.Limitations = limitations
 	result.Usage = finalizeUsage(usage, tracker)
+	e.attachPlanTrace(&result, profile, []string{prompts.CommonSystem, prompts.PlanExplore, prompts.PlanFinalize, prompts.RepairSchema}, req.IncludeTrace)
 
 	// Render and persist.
 	md := report.PlanMarkdown(result)

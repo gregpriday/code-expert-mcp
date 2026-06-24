@@ -13,6 +13,7 @@ type PlanResult struct {
 	Evidence    []EvidenceRef       `json:"evidence"`
 	Limitations []Limitation        `json:"limitations"`
 	Usage       RunUsage            `json:"usage"`
+	Trace       *RunTrace           `json:"trace,omitempty"`
 	ReportURI   string              `json:"report_uri,omitempty"`
 	Markdown    string              `json:"markdown,omitempty"`
 }
@@ -30,6 +31,7 @@ type ReviewResult struct {
 	Suppressed  SuppressionStats `json:"suppressed"`
 	Limitations []Limitation     `json:"limitations"`
 	Usage       RunUsage         `json:"usage"`
+	Trace       *RunTrace        `json:"trace,omitempty"`
 	ReportURI   string           `json:"report_uri,omitempty"`
 	Markdown    string           `json:"markdown,omitempty"`
 }
@@ -123,6 +125,34 @@ type RunUsage struct {
 	ModelsUsed          []string       `json:"models_used,omitempty"`
 	ProviderRequestIDs  []string       `json:"provider_request_ids,omitempty"`
 	Extra               map[string]int `json:"extra,omitempty"`
+}
+
+// RunTrace is the structured record of how a run was produced: the capability,
+// the model routing, the exact prompt versions, the retrieval and decision
+// counts, and accounting. It is the unit that closes the improvement loop —
+// persisted for every run and returned when output.include_trace is set — so a
+// failure can be turned into a regression case and one mechanism changed at a
+// time. It deliberately carries no raw repository content.
+type RunTrace struct {
+	RunID          string            `json:"run_id"`
+	Capability     string            `json:"capability"` // plan | help | review
+	AnswerType     string            `json:"answer_type,omitempty"`
+	Profile        string            `json:"profile,omitempty"`
+	Status         RunStatus         `json:"status"`
+	ModelsUsed     []string          `json:"models_used,omitempty"`
+	PromptVersions map[string]string `json:"prompt_versions,omitempty"` // prompt id -> content hash
+	Stages         []StageTrace      `json:"stages,omitempty"`
+	EvidenceCount  int               `json:"evidence_count"`
+	Repaired       bool              `json:"repaired,omitempty"`
+	LimitationN    int               `json:"limitation_count"`
+	Usage          RunUsage          `json:"usage"`
+}
+
+// StageTrace is the terminal state of one pipeline stage in a run.
+type StageTrace struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // complete | partial | failed | skipped
+	Detail string `json:"detail,omitempty"`
 }
 
 // EvidenceRef is a compact pointer to an evidence record used in outputs.

@@ -146,6 +146,7 @@ func (e *Engine) Help(ctx context.Context, req schema.HelpRequest, opts RunOptio
 		result.Snapshot = snap.Ref()
 		result.Repository = snap.Brief(e.Cfg.Repository)
 	}
+	e.attachPlanTrace(&result, profile, []string{prompts.CommonSystem, prompts.HelpExplore, prompts.HelpFinalize, prompts.RepairSchema}, req.Output.IncludeTrace)
 
 	md := report.PlanMarkdown(result)
 	result.Markdown = md

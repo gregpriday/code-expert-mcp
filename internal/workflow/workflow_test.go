@@ -293,3 +293,39 @@ func TestReviewEmptyChangeSet(t *testing.T) {
 		t.Error("review must never claim safe-to-merge or approved")
 	}
 }
+
+// TestRunTraceAttachedOnlyWhenRequested proves output.include_trace is now
+// truthful: the trace is attached only when asked, and carries the capability,
+// the exact prompt versions, and the per-stage ledger.
+func TestRunTraceAttachedOnlyWhenRequested(t *testing.T) {
+	dir, rel := tempGitRepo(t)
+	eng := newTestEngine(rel)
+	ctx := context.Background()
+
+	res, err := eng.Plan(ctx, schema.PlanRequest{Root: dir, Instructions: "Add a greeting flag"}, RunOptions{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if res.Trace != nil {
+		t.Error("trace must not be attached unless output.include_trace is set")
+	}
+
+	res2, err := eng.Plan(ctx, schema.PlanRequest{
+		Root: dir, Instructions: "Add a greeting flag", Output: schema.OutputOpts{IncludeTrace: true},
+	}, RunOptions{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if res2.Trace == nil {
+		t.Fatal("trace must be attached when output.include_trace is set")
+	}
+	if res2.Trace.Capability != "plan" {
+		t.Errorf("trace.capability = %q, want plan", res2.Trace.Capability)
+	}
+	if len(res2.Trace.PromptVersions) == 0 {
+		t.Error("trace must record the prompt versions used")
+	}
+	if len(res2.Trace.Stages) == 0 {
+		t.Error("trace must record the per-stage ledger")
+	}
+}
